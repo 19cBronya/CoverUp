@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 import sys
 import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Sequence
@@ -48,6 +50,44 @@ def locate_binaries() -> FfmpegBinaries:
     )
 
 
+_PROGRESS_FRAME_RE = re.compile(r"frame=\s*(\d+)")
+_PROGRESS_FPS_RE = re.compile(r"fps=\s*([0-9.]+)")
+_PROGRESS_TIME_RE = re.compile(r"time=\s*([0-9:.]+)")
+_PROGRESS_SPEED_RE = re.compile(r"speed=\s*([0-9.]+x)")
+
+
+def _format_ffmpeg_progress(line: str) -> str | None:
+    if not line.startswith("frame="):
+        return None
+    frame_match = _PROGRESS_FRAME_RE.search(line)
+    fps_match = _PROGRESS_FPS_RE.search(line)
+    time_match = _PROGRESS_TIME_RE.search(line)
+    speed_match = _PROGRESS_SPEED_RE.search(line)
+    if not frame_match:
+        return None
+    frame = frame_match.group(1)
+    fps = fps_match.group(1) if fps_match else "?"
+    timestamp = time_match.group(1) if time_match else "?"
+    speed = speed_match.group(1) if speed_match else "?"
+    return f"进度 frame={frame} time={timestamp} fps={fps} speed={speed}"
+
+
+def _is_ffmpeg_key_line(line: str) -> bool:
+    head = (
+        "ffmpeg version",
+        "Input #",
+        "Output #",
+        "Stream mapping:",
+        "Press [q]",
+        "video:",
+        "audio:",
+    )
+    if line.startswith(head):
+        return True
+    lowered = line.lower()
+    return "error" in lowered or "failed" in lowered or "invalid" in lowered
+
+
 def run_cmd(
     args: Sequence[str],
     timeout: int | None = None,
@@ -62,7 +102,8 @@ def run_cmd(
 
     prefix = f"{log_prefix} " if log_prefix else ""
     if stream_output:
-        print(f"{prefix}$ {' '.join(args)}", file=sys.stderr, flush=True)
+        print(f"{prefix}[command] {' '.join(args)}", file=sys.stderr, flush=True)
+        started = time.perf_counter()
         proc = subprocess.Popen(
             list(args),
             text=True,
@@ -74,13 +115,27 @@ def run_cmd(
 
         out_lines: list[str] = []
         err_lines: list[str] = []
+        last_progress_print = 0.0
 
         def _reader(stream, bucket: list[str], tag: str) -> None:
+            nonlocal last_progress_print
             for line in iter(stream.readline, ""):
                 bucket.append(line)
                 line_text = line.rstrip("\n")
-                if line_text:
-                    print(f"{prefix}[{tag}] {line_text}", file=sys.stderr, flush=True)
+                if not line_text:
+                    continue
+                if tag == "stderr":
+                    progress = _format_ffmpeg_progress(line_text)
+                    if progress is not None:
+                        now = time.perf_counter()
+                        if now - last_progress_print >= 1.0:
+                            last_progress_print = now
+                            print(f"{prefix}[progress] {progress}", file=sys.stderr, flush=True)
+                        continue
+                    if _is_ffmpeg_key_line(line_text):
+                        print(f"{prefix}[info] {line_text}", file=sys.stderr, flush=True)
+                    continue
+                print(f"{prefix}[stdout] {line_text}", file=sys.stderr, flush=True)
             stream.close()
 
         out_thread = threading.Thread(target=_reader, args=(proc.stdout, out_lines, "stdout"), daemon=True)
@@ -108,6 +163,9 @@ def run_cmd(
             stdout="".join(out_lines),
             stderr="".join(err_lines),
         )
+        elapsed = time.perf_counter() - started
+        status = "ok" if completed.returncode == 0 else f"exit={completed.returncode}"
+        print(f"{prefix}[done] {status} elapsed={elapsed:.1f}s", file=sys.stderr, flush=True)
     else:
         completed = subprocess.run(
             list(args),

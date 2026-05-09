@@ -13,6 +13,28 @@ def _tmp_output(video_path: Path) -> Path:
     return video_path.with_name(f"{video_path.stem}.coverup.tmp{ext}")
 
 
+_ENCODER_CACHE: dict[str, set[str]] = {}
+
+
+def _available_h264_encoders(bins: FfmpegBinaries) -> set[str]:
+    key = str(bins.ffmpeg)
+    cached = _ENCODER_CACHE.get(key)
+    if cached is not None:
+        return cached
+    found: set[str] = set()
+    try:
+        proc = run_cmd([str(bins.ffmpeg), "-hide_banner", "-encoders"], timeout=15)
+        text = f"{proc.stdout}\n{proc.stderr}"
+        for name in ("h264_qsv", "h264_nvenc", "h264_amf"):
+            if name in text:
+                found.add(name)
+    except Exception:
+        # If probing fails, keep an empty set and fall back to CPU.
+        pass
+    _ENCODER_CACHE[key] = found
+    return found
+
+
 def _replace_in_place(temp_out: Path, original: Path) -> Path:
     backup = original.with_name(f"{original.name}.coverup.bak")
     if backup.exists():
@@ -79,9 +101,11 @@ def _run_first_frame_mode(
         f"[1:v]{scale_pad},format=yuv420p,fps={fps}[main];"
         f"[cover][main]concat=n=2:v=1:a=0[v]"
     )
-    args = [
+    base_args = [
         str(bins.ffmpeg),
         "-y",
+        "-hwaccel",
+        "auto",
         "-loop",
         "1",
         "-t",
@@ -96,18 +120,48 @@ def _run_first_frame_mode(
         "[v]",
         "-map",
         "1:a?",
-        "-c:v",
-        "libx264",
-        "-preset",
-        "medium",
-        "-crf",
-        "18",
-        "-c:a",
-        "copy",
-        str(out_path),
     ]
-    proc = run_cmd(args, stream_output=stream_logs, log_prefix=f"[first-frame:{video_path.name}]")
-    return proc.returncode, proc.stdout, proc.stderr
+    encoder_profiles: list[tuple[str, str, list[str]]] = []
+    available = _available_h264_encoders(bins)
+
+    if "h264_qsv" in available:
+        encoder_profiles.append(("intel-qsv", "h264_qsv", ["-preset", "faster", "-global_quality", "26"]))
+    if "h264_nvenc" in available:
+        encoder_profiles.append(("nvidia-nvenc", "h264_nvenc", ["-preset", "p4", "-cq", "23", "-b:v", "0"]))
+    if "h264_amf" in available:
+        encoder_profiles.append(("amd-amf", "h264_amf", ["-quality", "balanced", "-rc", "cqp", "-qp_i", "23", "-qp_p", "23"]))
+    encoder_profiles.append(("cpu-x264", "libx264", ["-preset", "fast", "-crf", "20"]))
+
+    combined_out = ""
+    combined_err = ""
+    last_code = 1
+    for accel_name, encoder_name, encoder_opts in encoder_profiles:
+        args = [
+            *base_args,
+            "-c:v",
+            encoder_name,
+            *encoder_opts,
+            "-c:a",
+            "copy",
+            str(out_path),
+        ]
+        prefix = f"[first-frame:{video_path.name}:{accel_name}]"
+        if stream_logs:
+            print(f"{prefix} [try] encoder={encoder_name}", flush=True)
+        proc = run_cmd(args, stream_output=stream_logs, log_prefix=prefix)
+        last_code = proc.returncode
+        combined_out += proc.stdout
+        combined_err += proc.stderr
+        if proc.returncode == 0:
+            if stream_logs:
+                print(f"{prefix} [selected] encoder={encoder_name}", flush=True)
+            return 0, combined_out, combined_err
+        if out_path.exists():
+            out_path.unlink()
+        if stream_logs:
+            print(f"{prefix} [fallback] encoder failed, try next", flush=True)
+
+    return last_code, combined_out, combined_err
 
 
 def process_in_place(
