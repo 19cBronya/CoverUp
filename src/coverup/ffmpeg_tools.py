@@ -88,6 +88,38 @@ def _is_ffmpeg_key_line(line: str) -> bool:
     return "error" in lowered or "failed" in lowered or "invalid" in lowered
 
 
+def _is_error_line(line: str) -> bool:
+    lowered = line.lower()
+    keywords = ("error", "failed", "invalid", "could not", "unable")
+    return any(word in lowered for word in keywords)
+
+
+def _normalize_log_verbosity(log_verbosity: str) -> str:
+    value = (log_verbosity or "medium").strip().lower()
+    if value not in {"compact", "medium", "raw"}:
+        return "medium"
+    return value
+
+
+def _inject_progress_args(args: list[str], log_verbosity: str) -> tuple[list[str], bool]:
+    if not args:
+        return args, False
+    cmd_name = Path(args[0]).name.lower()
+    if "ffmpeg" not in cmd_name or log_verbosity == "raw":
+        return args, False
+    if "-progress" in args:
+        return args, True
+    return [args[0], "-progress", "pipe:2", "-nostats", *args[1:]], True
+
+
+def _format_progress_fields(progress_fields: dict[str, str]) -> str:
+    frame = progress_fields.get("frame", "?")
+    timestamp = progress_fields.get("out_time", "?")
+    fps = progress_fields.get("fps", "?")
+    speed = progress_fields.get("speed", "?")
+    return f"进度 frame={frame} time={timestamp} fps={fps} speed={speed}"
+
+
 def run_cmd(
     args: Sequence[str],
     timeout: int | None = None,
@@ -95,17 +127,21 @@ def run_cmd(
     env: dict[str, str] | None = None,
     stream_output: bool = False,
     log_prefix: str = "",
+    log_verbosity: str = "medium",
 ) -> subprocess.CompletedProcess[str]:
     run_env = os.environ.copy()
     if env:
         run_env.update(env)
+    verbosity = _normalize_log_verbosity(log_verbosity)
+    run_args = list(args)
 
     prefix = f"{log_prefix} " if log_prefix else ""
     if stream_output:
-        print(f"{prefix}[command] {' '.join(args)}", file=sys.stderr, flush=True)
+        run_args, progress_mode = _inject_progress_args(run_args, verbosity)
+        print(f"{prefix}[command] {' '.join(run_args)}", file=sys.stderr, flush=True)
         started = time.perf_counter()
         proc = subprocess.Popen(
-            list(args),
+            run_args,
             text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -117,6 +153,13 @@ def run_cmd(
         err_lines: list[str] = []
         last_progress_print = 0.0
 
+        progress_fields: dict[str, str] = {
+            "frame": "?",
+            "out_time": "?",
+            "fps": "?",
+            "speed": "?",
+        }
+
         def _reader(stream, bucket: list[str], tag: str) -> None:
             nonlocal last_progress_print
             for line in iter(stream.readline, ""):
@@ -124,7 +167,24 @@ def run_cmd(
                 line_text = line.rstrip("\n")
                 if not line_text:
                     continue
+                if verbosity == "raw":
+                    print(f"{prefix}[{tag}] {line_text}", file=sys.stderr, flush=True)
+                    continue
                 if tag == "stderr":
+                    if progress_mode and "=" in line_text:
+                        key, value = line_text.split("=", maxsplit=1)
+                        key = key.strip()
+                        value = value.strip()
+                        if key in {"frame", "out_time", "fps", "speed"}:
+                            progress_fields[key] = value
+                            continue
+                        if key == "progress":
+                            now = time.perf_counter()
+                            if value == "end" or now - last_progress_print >= 1.0:
+                                last_progress_print = now
+                                progress = _format_progress_fields(progress_fields)
+                                print(f"{prefix}[progress] {progress}", file=sys.stderr, flush=True)
+                            continue
                     progress = _format_ffmpeg_progress(line_text)
                     if progress is not None:
                         now = time.perf_counter()
@@ -132,10 +192,13 @@ def run_cmd(
                             last_progress_print = now
                             print(f"{prefix}[progress] {progress}", file=sys.stderr, flush=True)
                         continue
-                    if _is_ffmpeg_key_line(line_text):
+                    if verbosity == "medium" and _is_ffmpeg_key_line(line_text):
                         print(f"{prefix}[info] {line_text}", file=sys.stderr, flush=True)
+                    elif verbosity == "compact" and _is_error_line(line_text):
+                        print(f"{prefix}[error] {line_text}", file=sys.stderr, flush=True)
                     continue
-                print(f"{prefix}[stdout] {line_text}", file=sys.stderr, flush=True)
+                if verbosity != "compact":
+                    print(f"{prefix}[stdout] {line_text}", file=sys.stderr, flush=True)
             stream.close()
 
         out_thread = threading.Thread(target=_reader, args=(proc.stdout, out_lines, "stdout"), daemon=True)
@@ -158,7 +221,7 @@ def run_cmd(
         err_thread.join()
 
         completed = subprocess.CompletedProcess(
-            args=list(args),
+            args=run_args,
             returncode=proc.returncode,
             stdout="".join(out_lines),
             stderr="".join(err_lines),
@@ -168,7 +231,7 @@ def run_cmd(
         print(f"{prefix}[done] {status} elapsed={elapsed:.1f}s", file=sys.stderr, flush=True)
     else:
         completed = subprocess.run(
-            list(args),
+            run_args,
             text=True,
             capture_output=True,
             timeout=timeout,

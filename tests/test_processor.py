@@ -71,3 +71,71 @@ def test_process_temp_output_defaults_to_mp4_for_extensionless_path(monkeypatch,
 
     assert result.exit_code == 1
     assert captured["args"][-1].endswith(".coverup.tmp.mp4")
+
+
+def test_metadata_retries_with_conservative_mapping_after_preserve_failure(monkeypatch, tmp_path: Path) -> None:
+    video = tmp_path / "demo.mp4"
+    cover = tmp_path / "cover.jpg"
+    video.write_bytes(b"v")
+    cover.write_bytes(b"c")
+    seen: list[list[str]] = []
+
+    def fake_run_cmd(args, **_kwargs):
+        args = list(args)
+        seen.append(args)
+        if args[0].endswith("ffprobe"):
+            # Simulate two existing video-type streams so dynamic cover index should be v:2.
+            return subprocess.CompletedProcess(args=args, returncode=0, stdout="0\n1\n", stderr="")
+        if "0:V:0" in args:
+            Path(args[-1]).write_bytes(b"ok")
+            return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
+        return subprocess.CompletedProcess(
+            args=args,
+            returncode=1,
+            stdout="",
+            stderr="Could not write header (incorrect codec parameters ?): Invalid argument",
+        )
+
+    monkeypatch.setattr("coverup.processor.run_cmd", fake_run_cmd)
+
+    result = process_in_place(
+        video_path=video,
+        cover_path=cover,
+        mode=CoverMode.METADATA,
+        bins=type("Bins", (), {"ffmpeg": Path("ffmpeg"), "ffprobe": Path("ffprobe")})(),
+        probe=_probe(),
+    )
+
+    ffmpeg_calls = [call for call in seen if call and call[0].endswith("ffmpeg")]
+    assert result.exit_code == 0
+    assert ffmpeg_calls
+    assert "-c:v:2" in ffmpeg_calls[0]
+    assert any("0:V:0" in call for call in ffmpeg_calls)
+    assert result.attempt_trace == ["A:fail(exit=1)", "B:ok"]
+
+
+def test_metadata_returns_both_failures_when_compat_retry_also_fails(monkeypatch, tmp_path: Path) -> None:
+    video = tmp_path / "demo.mp4"
+    cover = tmp_path / "cover.jpg"
+    video.write_bytes(b"v")
+    cover.write_bytes(b"c")
+
+    def fake_run_cmd(args, **_kwargs):
+        args = list(args)
+        if args[0].endswith("ffprobe"):
+            return subprocess.CompletedProcess(args=args, returncode=0, stdout="0\n", stderr="")
+        return subprocess.CompletedProcess(args=args, returncode=1, stdout="", stderr="Invalid argument")
+
+    monkeypatch.setattr("coverup.processor.run_cmd", fake_run_cmd)
+
+    result = process_in_place(
+        video_path=video,
+        cover_path=cover,
+        mode=CoverMode.METADATA,
+        bins=type("Bins", (), {"ffmpeg": Path("ffmpeg"), "ffprobe": Path("ffprobe")})(),
+        probe=_probe(),
+    )
+
+    assert result.exit_code == 1
+    assert result.attempt_trace == ["A:fail(exit=1)", "B:fail(exit=1)"]
+    assert "兼容重试" in result.warning

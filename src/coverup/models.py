@@ -24,6 +24,17 @@ class JobStatus(str, Enum):
     SKIPPED = "skipped"
 
 
+class MetadataFailureAction(str, Enum):
+    SKIP = "skip"
+    FIRST_FRAME = "first_frame"
+
+
+class LogVerbosity(str, Enum):
+    COMPACT = "compact"
+    MEDIUM = "medium"
+    RAW = "raw"
+
+
 @dataclass(slots=True)
 class ProbeResult:
     format_name: str
@@ -83,6 +94,8 @@ class JobResult:
     stdout_log: str = ""
     stderr_log: str = ""
     warning: str = ""
+    attempt_trace: list[str] = field(default_factory=list)
+    selected_encoder: str = ""
 
 
 @dataclass(slots=True)
@@ -95,4 +108,5 @@ class AppState:
 class RunOptions:
     use_metadata: bool = True
     use_first_frame: bool = False
-    allow_metadata_fallback_to_first_frame: bool = True
+    metadata_failure_action: MetadataFailureAction = MetadataFailureAction.SKIP
+    log_verbosity: LogVerbosity = LogVerbosity.MEDIUM
