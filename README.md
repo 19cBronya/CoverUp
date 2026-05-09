@@ -31,6 +31,8 @@ pip install -e .
 coverup-gui
 ```
 
+说明：GUI 顶部默认开启 `命令行日志`，执行任务时会在终端实时打印 ffmpeg 命令与输出，便于排查卡住或失败原因。
+
 启动 CLI：
 
 ```bash

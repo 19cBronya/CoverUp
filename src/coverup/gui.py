@@ -169,6 +169,8 @@ class MainWindow(QMainWindow):
         self.chk_mode_metadata = QCheckBox("元数据封面")
         self.chk_mode_metadata.setChecked(True)
         self.chk_mode_first_frame = QCheckBox("替换首帧")
+        self.chk_cmd_logs = QCheckBox("命令行日志")
+        self.chk_cmd_logs.setChecked(True)
         self.btn_run_all = QPushButton("执行全部")
         self.btn_run_selected = QPushButton("执行当前")
         top.addWidget(self.btn_add_files)
@@ -178,6 +180,7 @@ class MainWindow(QMainWindow):
         top.addWidget(QLabel("执行策略："))
         top.addWidget(self.chk_mode_metadata)
         top.addWidget(self.chk_mode_first_frame)
+        top.addWidget(self.chk_cmd_logs)
         top.addStretch(1)
         top.addWidget(self.btn_run_selected)
         top.addWidget(self.btn_run_all)
@@ -700,6 +703,7 @@ class MainWindow(QMainWindow):
         job = self.jobs[idx]
         job.status = JobStatus.RUNNING
         self._render_row(idx)
+        stream_logs = self.chk_cmd_logs.isChecked()
 
         def fn() -> ProcessTaskResult:
             probe = self.probes.get(idx) or probe_video(job.video_path, self.bins)
@@ -711,7 +715,14 @@ class MainWindow(QMainWindow):
             errors: list[str] = []
 
             if options.use_first_frame:
-                first_result = process_in_place(job.video_path, cover_path, CoverMode.FIRST_FRAME, self.bins, probe)
+                first_result = process_in_place(
+                    job.video_path,
+                    cover_path,
+                    CoverMode.FIRST_FRAME,
+                    self.bins,
+                    probe,
+                    stream_logs=stream_logs,
+                )
                 if first_result.exit_code != 0:
                     return ProcessTaskResult(
                         job_index=idx,
@@ -724,7 +735,14 @@ class MainWindow(QMainWindow):
                 strategy_parts.append("首帧成功")
 
             if options.use_metadata:
-                meta_result = process_in_place(job.video_path, cover_path, CoverMode.METADATA, self.bins, probe)
+                meta_result = process_in_place(
+                    job.video_path,
+                    cover_path,
+                    CoverMode.METADATA,
+                    self.bins,
+                    probe,
+                    stream_logs=stream_logs,
+                )
                 if meta_result.exit_code == 0:
                     metadata_done = True
                     strategy_parts.append("元数据成功")
@@ -733,7 +751,14 @@ class MainWindow(QMainWindow):
                     if options.use_first_frame:
                         strategy_parts.append("元数据失败已跳过")
                     elif options.allow_metadata_fallback_to_first_frame:
-                        fallback = process_in_place(job.video_path, cover_path, CoverMode.FIRST_FRAME, self.bins, probe)
+                        fallback = process_in_place(
+                            job.video_path,
+                            cover_path,
+                            CoverMode.FIRST_FRAME,
+                            self.bins,
+                            probe,
+                            stream_logs=stream_logs,
+                        )
                         if fallback.exit_code == 0:
                             first_frame_done = True
                             strategy_parts.append("元数据失败，已自动首帧")

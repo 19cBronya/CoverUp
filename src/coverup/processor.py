@@ -29,7 +29,13 @@ def _replace_in_place(temp_out: Path, original: Path) -> Path:
     return original
 
 
-def _run_metadata_mode(video_path: Path, cover_path: Path, out_path: Path, bins: FfmpegBinaries) -> tuple[int, str, str]:
+def _run_metadata_mode(
+    video_path: Path,
+    cover_path: Path,
+    out_path: Path,
+    bins: FfmpegBinaries,
+    stream_logs: bool = False,
+) -> tuple[int, str, str]:
     args = [
         str(bins.ffmpeg),
         "-y",
@@ -49,7 +55,7 @@ def _run_metadata_mode(video_path: Path, cover_path: Path, out_path: Path, bins:
         "attached_pic",
         str(out_path),
     ]
-    proc = run_cmd(args)
+    proc = run_cmd(args, stream_output=stream_logs, log_prefix=f"[metadata:{video_path.name}]")
     return proc.returncode, proc.stdout, proc.stderr
 
 
@@ -59,6 +65,7 @@ def _run_first_frame_mode(
     out_path: Path,
     bins: FfmpegBinaries,
     probe: ProbeResult,
+    stream_logs: bool = False,
 ) -> tuple[int, str, str]:
     width = max(2, probe.width if probe.width > 0 else 1280)
     height = max(2, probe.height if probe.height > 0 else 720)
@@ -99,7 +106,7 @@ def _run_first_frame_mode(
         "copy",
         str(out_path),
     ]
-    proc = run_cmd(args)
+    proc = run_cmd(args, stream_output=stream_logs, log_prefix=f"[first-frame:{video_path.name}]")
     return proc.returncode, proc.stdout, proc.stderr
 
 
@@ -109,6 +116,7 @@ def process_in_place(
     mode: CoverMode,
     bins: FfmpegBinaries,
     probe: ProbeResult,
+    stream_logs: bool = False,
 ) -> JobResult:
     if not cover_path.exists():
         raise FfmpegError(f"封面文件不存在: {cover_path}")
@@ -119,9 +127,9 @@ def process_in_place(
         temp_out.unlink()
 
     if mode == CoverMode.METADATA:
-        code, out, err = _run_metadata_mode(video_path, cover_path, temp_out, bins)
+        code, out, err = _run_metadata_mode(video_path, cover_path, temp_out, bins, stream_logs=stream_logs)
     else:
-        code, out, err = _run_first_frame_mode(video_path, cover_path, temp_out, bins, probe)
+        code, out, err = _run_first_frame_mode(video_path, cover_path, temp_out, bins, probe, stream_logs=stream_logs)
 
     if code != 0:
         if temp_out.exists():

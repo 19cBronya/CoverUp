@@ -4,6 +4,7 @@ import os
 import shutil
 import subprocess
 import sys
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Sequence
@@ -52,20 +53,73 @@ def run_cmd(
     timeout: int | None = None,
     check: bool = False,
     env: dict[str, str] | None = None,
+    stream_output: bool = False,
+    log_prefix: str = "",
 ) -> subprocess.CompletedProcess[str]:
     run_env = os.environ.copy()
     if env:
         run_env.update(env)
-    proc = subprocess.run(
-        list(args),
-        text=True,
-        capture_output=True,
-        timeout=timeout,
-        env=run_env,
-    )
-    if check and proc.returncode != 0:
-        raise FfmpegError(
-            f"命令失败(returncode={proc.returncode}): {' '.join(args)}\n"
-            f"stderr:\n{proc.stderr.strip()}"
+
+    prefix = f"{log_prefix} " if log_prefix else ""
+    if stream_output:
+        print(f"{prefix}$ {' '.join(args)}", file=sys.stderr, flush=True)
+        proc = subprocess.Popen(
+            list(args),
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=run_env,
+            bufsize=1,
         )
-    return proc
+
+        out_lines: list[str] = []
+        err_lines: list[str] = []
+
+        def _reader(stream, bucket: list[str], tag: str) -> None:
+            for line in iter(stream.readline, ""):
+                bucket.append(line)
+                line_text = line.rstrip("\n")
+                if line_text:
+                    print(f"{prefix}[{tag}] {line_text}", file=sys.stderr, flush=True)
+            stream.close()
+
+        out_thread = threading.Thread(target=_reader, args=(proc.stdout, out_lines, "stdout"), daemon=True)
+        err_thread = threading.Thread(target=_reader, args=(proc.stderr, err_lines, "stderr"), daemon=True)
+        out_thread.start()
+        err_thread.start()
+        try:
+            proc.wait(timeout=timeout)
+        except subprocess.TimeoutExpired as err:
+            proc.kill()
+            out_thread.join(timeout=1)
+            err_thread.join(timeout=1)
+            raise subprocess.TimeoutExpired(
+                cmd=err.cmd,
+                timeout=err.timeout,
+                output="".join(out_lines),
+                stderr="".join(err_lines),
+            ) from err
+        out_thread.join()
+        err_thread.join()
+
+        completed = subprocess.CompletedProcess(
+            args=list(args),
+            returncode=proc.returncode,
+            stdout="".join(out_lines),
+            stderr="".join(err_lines),
+        )
+    else:
+        completed = subprocess.run(
+            list(args),
+            text=True,
+            capture_output=True,
+            timeout=timeout,
+            env=run_env,
+        )
+
+    if check and completed.returncode != 0:
+        raise FfmpegError(
+            f"命令失败(returncode={completed.returncode}): {' '.join(args)}\n"
+            f"stderr:\n{completed.stderr.strip()}"
+        )
+    return completed
