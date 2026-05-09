@@ -1,0 +1,39 @@
+# Python cache / build artifacts
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Packaging outputs
+build/
+dist/
+*.egg
+pip-wheel-metadata/
+bin/windows/*.exe
+
+# Runtime temporary files
+tmp/
+temp/
+sample_cache/
+*.log
+
+# IDE / editor
+.vscode/
+.idea/
+
+# OS files
+.DS_Store
+Thumbs.db

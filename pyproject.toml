@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "coverup"
+version = "0.1.0"
+description = "Video cover replacement GUI and CLI tool."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "PySide6>=6.6",
+]
+
+[project.scripts]
+coverup-gui = "coverup.main:launch_gui"
+coverup-cli = "coverup.main:launch_cli"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
