@@ -40,6 +40,7 @@ from .scanner import scan_videos
 class WorkerSignals(QObject):
     done = Signal(object)
     failed = Signal(str)
+    finished = Signal()
 
 
 class CallableWorker(QRunnable):
@@ -53,9 +54,18 @@ class CallableWorker(QRunnable):
         try:
             result = self.fn()
         except Exception as err:  # noqa: BLE001
-            self.signals.failed.emit(str(err))
+            self._safe_emit(self.signals.failed.emit, str(err))
+            self._safe_emit(self.signals.finished.emit)
             return
-        self.signals.done.emit(result)
+        self._safe_emit(self.signals.done.emit, result)
+        self._safe_emit(self.signals.finished.emit)
+
+    def _safe_emit(self, emitter: Callable[..., None], *args: object) -> None:
+        try:
+            emitter(*args)
+        except RuntimeError:
+            # App/window might be closing while background tasks are still unwinding.
+            return
 
 
 @dataclass(slots=True)
@@ -110,6 +120,7 @@ class MainWindow(QMainWindow):
         self.current_run_options = RunOptions()
         self.processing_now = False
         self.current_processing_index: int | None = None
+        self.active_workers: set[CallableWorker] = set()
 
         self._build_ui()
 
@@ -333,12 +344,18 @@ class MainWindow(QMainWindow):
         for col, text in values.items():
             item = self.table.item(row, col)
             if item is None:
-                item = QTableWidgetItem(text)
-            else:
-                item.setText(text)
+                item = QTableWidgetItem()
+                self.table.setItem(row, col, item)
+            item.setText(text)
             if col == self.COL_DIRECTORY:
                 item.setToolTip(str(job.video_path.parent))
-            self.table.setItem(row, col, item)
+            else:
+                item.setToolTip("")
+
+    def _start_worker(self, worker: CallableWorker, priority: int = 0) -> None:
+        self.active_workers.add(worker)
+        worker.signals.finished.connect(lambda w=worker: self.active_workers.discard(w))
+        self.pool.start(worker, priority=priority)
 
     def _update_cover_preview(self, row: int) -> None:
         if row < 0 or row >= len(self.jobs):
@@ -366,7 +383,7 @@ class MainWindow(QMainWindow):
         worker = CallableWorker(fn)
         worker.signals.done.connect(self._on_probe_done)
         worker.signals.failed.connect(lambda msg, idx=job_index: self._on_probe_failed(idx, msg))
-        self.pool.start(worker, priority=priority)
+        self._start_worker(worker, priority=priority)
 
     def _on_probe_done(self, payload: object) -> None:
         if not isinstance(payload, ProbeTaskResult):
@@ -411,7 +428,7 @@ class MainWindow(QMainWindow):
         worker = CallableWorker(fn)
         worker.signals.done.connect(self._on_sample_done)
         worker.signals.failed.connect(lambda msg, k=key: self._on_sample_failed(k, msg))
-        self.pool.start(worker, priority=priority)
+        self._start_worker(worker, priority=priority)
 
     def _on_sample_done(self, payload: object) -> None:
         if not isinstance(payload, SampleTaskResult):
@@ -763,7 +780,7 @@ class MainWindow(QMainWindow):
         worker = CallableWorker(fn)
         worker.signals.done.connect(self._on_process_done)
         worker.signals.failed.connect(self._on_process_failed)
-        self.pool.start(worker, priority=20)
+        self._start_worker(worker, priority=20)
 
     def _on_process_done(self, payload: object) -> None:
         if not isinstance(payload, ProcessTaskResult):

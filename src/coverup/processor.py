@@ -8,8 +8,9 @@ from .ffmpeg_tools import FfmpegBinaries, FfmpegError, run_cmd
 from .models import CoverMode, JobResult, ProbeResult
 
 
-def _tmp_output(video_path: Path, suffix: str = ".tmp.mp4") -> Path:
-    return video_path.with_name(f"{video_path.stem}.coverup{suffix}")
+def _tmp_output(video_path: Path) -> Path:
+    ext = video_path.suffix or ".mp4"
+    return video_path.with_name(f"{video_path.stem}.coverup.tmp{ext}")
 
 
 def _replace_in_place(temp_out: Path, original: Path) -> Path:
@@ -113,7 +114,7 @@ def process_in_place(
         raise FfmpegError(f"封面文件不存在: {cover_path}")
 
     start = time.perf_counter()
-    temp_out = _tmp_output(video_path, suffix=f".{video_path.suffix.lstrip('.')}.tmp")
+    temp_out = _tmp_output(video_path)
     if temp_out.exists():
         temp_out.unlink()
 
