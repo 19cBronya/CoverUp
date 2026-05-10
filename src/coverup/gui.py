@@ -288,13 +288,16 @@ class MainWindow(QMainWindow):
 
     def _current_options(self) -> RunOptions:
         action_value = self.cmb_metadata_failure_action.currentData() or MetadataFailureAction.SKIP.value
-        verbosity_value = self.cmb_log_verbosity.currentData() or LogVerbosity.MEDIUM.value
+        verbosity_value = self._current_log_verbosity()
         return RunOptions(
             use_metadata=self.chk_mode_metadata.isChecked(),
             use_first_frame=self.chk_mode_first_frame.isChecked(),
             metadata_failure_action=MetadataFailureAction(action_value),
             log_verbosity=LogVerbosity(verbosity_value),
         )
+
+    def _current_log_verbosity(self) -> str:
+        return self.cmb_log_verbosity.currentData() or LogVerbosity.MEDIUM.value
 
     def _current_index(self) -> int:
         rows = self.table.selectionModel().selectedRows()
@@ -460,9 +463,16 @@ class MainWindow(QMainWindow):
         if job_index in self.probe_inflight:
             return
         self.probe_inflight.add(job_index)
+        stream_logs = self.chk_cmd_logs.isChecked()
+        verbosity = self._current_log_verbosity()
 
         def fn() -> ProbeTaskResult:
-            result = probe_video(self.jobs[job_index].video_path, self.bins)
+            result = probe_video(
+                self.jobs[job_index].video_path,
+                self.bins,
+                stream_logs=stream_logs,
+                log_verbosity=verbosity,
+            )
             return ProbeTaskResult(job_index=job_index, result=result)
 
         worker = CallableWorker(fn)
@@ -504,10 +514,18 @@ class MainWindow(QMainWindow):
         if key in self.sample_cache or key in self.sample_inflight:
             return
         self.sample_inflight.add(key)
+        stream_logs = self.chk_cmd_logs.isChecked()
+        verbosity = self._current_log_verbosity()
 
         def fn() -> SampleTaskResult:
             request = SampleRequest(video_path=self.jobs[job_index].video_path, minute_index=minute_index, sample_count=12)
-            result = sample_minute(request, self.probes[job_index].duration, self.bins)
+            result = sample_minute(
+                request,
+                self.probes[job_index].duration,
+                self.bins,
+                stream_logs=stream_logs,
+                log_verbosity=verbosity,
+            )
             return SampleTaskResult(job_index=job_index, minute_index=minute_index, result=result)
 
         worker = CallableWorker(fn)
@@ -719,7 +737,12 @@ class MainWindow(QMainWindow):
         probe = self.probes.get(idx)
         if probe is None:
             try:
-                probe = probe_video(job.video_path, self.bins)
+                probe = probe_video(
+                    job.video_path,
+                    self.bins,
+                    stream_logs=self.chk_cmd_logs.isChecked(),
+                    log_verbosity=self._current_log_verbosity(),
+                )
                 self.probes[idx] = probe
             except Exception as err:  # noqa: BLE001
                 job.error_message = f"探测失败: {err}"
@@ -732,6 +755,8 @@ class MainWindow(QMainWindow):
                     SampleRequest(video_path=job.video_path, minute_index=job.minute_index, sample_count=12),
                     probe.duration,
                     self.bins,
+                    stream_logs=self.chk_cmd_logs.isChecked(),
+                    log_verbosity=self._current_log_verbosity(),
                 )
             except Exception as err:  # noqa: BLE001
                 job.error_message = f"抽帧失败: {err}"
@@ -812,10 +837,15 @@ class MainWindow(QMainWindow):
         stream_logs = self.chk_cmd_logs.isChecked()
 
         def fn() -> ProcessTaskResult:
-            probe = self.probes.get(idx) or probe_video(job.video_path, self.bins)
             cover_path = Path(job.cover_path) if job.cover_path else Path()
             options = self.current_run_options
             verbosity = options.log_verbosity.value
+            probe = self.probes.get(idx) or probe_video(
+                job.video_path,
+                self.bins,
+                stream_logs=stream_logs,
+                log_verbosity=verbosity,
+            )
 
             if options.use_metadata:
                 meta_result = process_in_place(

@@ -87,7 +87,14 @@ def _build_extract_args(video_path: Path, point: float, out_path: Path, accurate
     ]
 
 
-def _extract_frame_with_fallback(video_path: Path, point: float, out_path: Path, bins: FfmpegBinaries) -> None:
+def _extract_frame_with_fallback(
+    video_path: Path,
+    point: float,
+    out_path: Path,
+    bins: FfmpegBinaries,
+    stream_logs: bool = False,
+    log_verbosity: str = "medium",
+) -> None:
     attempts = (
         ("fast-seek", _build_extract_args(video_path, point, out_path, accurate_seek=False)),
         ("accurate-seek", _build_extract_args(video_path, point, out_path, accurate_seek=True)),
@@ -95,7 +102,12 @@ def _extract_frame_with_fallback(video_path: Path, point: float, out_path: Path,
     errors: list[str] = []
     for name, sub_args in attempts:
         args = [str(bins.ffmpeg), *sub_args]
-        proc = run_cmd(args)
+        proc = run_cmd(
+            args,
+            stream_output=stream_logs,
+            log_prefix=f"[sample:{video_path.name}:{name}@{point:.3f}s]",
+            log_verbosity=log_verbosity,
+        )
         if proc.returncode == 0 and out_path.exists():
             return
         if out_path.exists():
@@ -111,6 +123,8 @@ def sample_minute(
     request: SampleRequest,
     duration: float,
     bins: FfmpegBinaries,
+    stream_logs: bool = False,
+    log_verbosity: str = "medium",
 ) -> SampleResult:
     decision = decide_window(duration=duration, minute_index=request.minute_index)
     points = uniform_points(decision.window_start, decision.window_end, request.sample_count)
@@ -119,7 +133,14 @@ def sample_minute(
 
     for idx, point in enumerate(points):
         out_path = thumb_dir / f"sample_{idx:02d}.jpg"
-        _extract_frame_with_fallback(request.video_path, point, out_path, bins)
+        _extract_frame_with_fallback(
+            request.video_path,
+            point,
+            out_path,
+            bins,
+            stream_logs=stream_logs,
+            log_verbosity=log_verbosity,
+        )
         thumbs.append(out_path)
 
     return SampleResult(

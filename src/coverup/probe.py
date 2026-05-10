@@ -50,7 +50,12 @@ def _parse_fps(rate: str | None) -> float:
     return _safe_float(rate)
 
 
-def probe_video(video_path: Path, bins: FfmpegBinaries) -> ProbeResult:
+def probe_video(
+    video_path: Path,
+    bins: FfmpegBinaries,
+    stream_logs: bool = False,
+    log_verbosity: str = "medium",
+) -> ProbeResult:
     args = [
         str(bins.ffprobe),
         "-v",
@@ -61,7 +66,13 @@ def probe_video(video_path: Path, bins: FfmpegBinaries) -> ProbeResult:
         "json",
         str(video_path),
     ]
-    proc = run_cmd(args, check=True)
+    proc = run_cmd(
+        args,
+        check=True,
+        stream_output=stream_logs,
+        log_prefix=f"[probe:{video_path.name}]",
+        log_verbosity=log_verbosity,
+    )
     payload = json.loads(proc.stdout or "{}")
 
     format_name = ((payload.get("format") or {}).get("format_name") or "").split(",")[0]
