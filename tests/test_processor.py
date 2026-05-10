@@ -4,7 +4,7 @@ import subprocess
 from pathlib import Path
 
 from coverup.models import CoverMode, ProbeResult
-from coverup.processor import process_in_place, should_force_first_frame_for_mov
+from coverup.processor import cover_policy_for_path, process_in_place, resolve_metadata_mode
 
 
 def _probe() -> ProbeResult:
@@ -141,11 +141,49 @@ def test_metadata_returns_both_failures_when_compat_retry_also_fails(monkeypatch
     assert "兼容重试" in result.warning
 
 
-def test_mov_metadata_is_forced_to_first_frame() -> None:
-    assert should_force_first_frame_for_mov(Path("demo.mov"), CoverMode.METADATA) is True
-    assert should_force_first_frame_for_mov(Path("demo.MOV"), CoverMode.METADATA) is True
+def test_mov_uses_attached_pic_metadata_policy() -> None:
+    mode, policy = resolve_metadata_mode(Path("demo.mov"), CoverMode.METADATA)
+    assert mode == CoverMode.METADATA
+    assert policy.metadata_strategy == "attached_pic"
 
 
-def test_non_mov_or_non_metadata_keeps_original_mode() -> None:
-    assert should_force_first_frame_for_mov(Path("demo.mp4"), CoverMode.METADATA) is False
-    assert should_force_first_frame_for_mov(Path("demo.mov"), CoverMode.FIRST_FRAME) is False
+def test_first_frame_only_formats_auto_switch_when_requesting_metadata() -> None:
+    mode, policy = resolve_metadata_mode(Path("demo.ts"), CoverMode.METADATA)
+    assert mode == CoverMode.FIRST_FRAME
+    assert policy.metadata_strategy == "first_frame_only"
+
+
+def test_supported_extensions_have_explicit_policy() -> None:
+    for ext in (".mp4", ".mkv", ".mov", ".avi", ".webm", ".flv", ".wmv", ".m4v", ".mpeg", ".mpg", ".ts", ".m2ts", ".3gp", ".rmvb"):
+        policy = cover_policy_for_path(Path(f"demo{ext}"))
+        assert policy.extension == ext
+
+
+def test_mkv_metadata_uses_attachment_strategy(monkeypatch, tmp_path: Path) -> None:
+    video = tmp_path / "demo.mkv"
+    cover = tmp_path / "cover.jpg"
+    video.write_bytes(b"v")
+    cover.write_bytes(b"c")
+    seen: list[list[str]] = []
+
+    def fake_run_cmd(args, **_kwargs):
+        args = list(args)
+        seen.append(args)
+        Path(args[-1]).write_bytes(b"ok")
+        return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr("coverup.processor.run_cmd", fake_run_cmd)
+
+    result = process_in_place(
+        video_path=video,
+        cover_path=cover,
+        mode=CoverMode.METADATA,
+        bins=type("Bins", (), {"ffmpeg": Path("ffmpeg"), "ffprobe": Path("ffprobe")})(),
+        probe=_probe(),
+    )
+
+    assert result.exit_code == 0
+    assert seen
+    first_call = seen[0]
+    assert "-attach" in first_call
+    assert "-metadata:s:t:0" in first_call

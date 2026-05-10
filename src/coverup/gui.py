@@ -45,7 +45,7 @@ from .models import (
     VideoJob,
 )
 from .probe import probe_video
-from .processor import process_in_place, should_force_first_frame_for_mov
+from .processor import process_in_place, resolve_metadata_mode
 from .sampling import decide_window, sample_minute
 from .scanner import scan_videos
 
@@ -817,38 +817,39 @@ class MainWindow(QMainWindow):
             options = self.current_run_options
             verbosity = options.log_verbosity.value
 
-            if should_force_first_frame_for_mov(job.video_path, CoverMode.METADATA) and options.use_metadata:
-                first_result = process_in_place(
-                    job.video_path,
-                    cover_path,
-                    CoverMode.FIRST_FRAME,
-                    self.bins,
-                    probe,
-                    stream_logs=stream_logs,
-                    log_verbosity=verbosity,
-                )
-                first_attempt_note = self._build_attempt_note(first_result.attempt_trace)
-                if first_result.exit_code == 0:
-                    encoder_name = first_result.selected_encoder or "libx264"
-                    strategy = f"MOV兼容模式：跳过元数据，首帧成功({encoder_name})"
-                    if first_attempt_note:
-                        strategy = f"{strategy} [{first_attempt_note}]"
+            if options.use_metadata:
+                effective_mode, policy = resolve_metadata_mode(job.video_path, CoverMode.METADATA)
+                if effective_mode == CoverMode.FIRST_FRAME:
+                    compat_result = process_in_place(
+                        job.video_path,
+                        cover_path,
+                        CoverMode.METADATA,
+                        self.bins,
+                        probe,
+                        stream_logs=stream_logs,
+                        log_verbosity=verbosity,
+                    )
+                    compat_attempt_note = self._build_attempt_note(compat_result.attempt_trace)
+                    if compat_result.exit_code == 0:
+                        encoder_name = compat_result.selected_encoder or "libx264"
+                        strategy = f"格式适配：{policy.extension} 走首帧成功({encoder_name})"
+                        if compat_attempt_note:
+                            strategy = f"{strategy} [{compat_attempt_note}]"
+                        return ProcessTaskResult(
+                            job_index=idx,
+                            final_status=JobStatus.SUCCESS,
+                            strategy_result=strategy,
+                            error="",
+                            old_path=job.video_path,
+                        )
                     return ProcessTaskResult(
                         job_index=idx,
-                        final_status=JobStatus.SUCCESS,
-                        strategy_result=strategy,
-                        error="",
+                        final_status=JobStatus.FAILED,
+                        strategy_result=f"格式适配：{policy.extension} 走首帧失败",
+                        error=self._summarize_error(compat_result.stderr_log or compat_result.warning or "首帧执行失败"),
                         old_path=job.video_path,
                     )
-                return ProcessTaskResult(
-                    job_index=idx,
-                    final_status=JobStatus.FAILED,
-                    strategy_result="MOV兼容模式：首帧失败",
-                    error=self._summarize_error(first_result.stderr_log or "MOV 首帧执行失败"),
-                    old_path=job.video_path,
-                )
 
-            if options.use_metadata:
                 meta_result = process_in_place(
                     job.video_path,
                     cover_path,
@@ -860,7 +861,7 @@ class MainWindow(QMainWindow):
                 )
                 meta_attempt_note = self._build_attempt_note(meta_result.attempt_trace)
                 if meta_result.exit_code == 0:
-                    strategy = "元数据成功"
+                    strategy = f"元数据成功({policy.extension})"
                     if meta_attempt_note:
                         strategy = f"{strategy} [{meta_attempt_note}]"
                     return ProcessTaskResult(

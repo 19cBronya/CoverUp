@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import shutil
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Sequence
 
@@ -29,10 +30,48 @@ def _cache_key(bins: FfmpegBinaries) -> str:
     return str(bins.ffmpeg)
 
 
-def should_force_first_frame_for_mov(video_path: Path, requested_mode: CoverMode) -> bool:
-    # Windows Explorer often does not surface MOV embedded attached_pic as visible cover.
-    # Use first-frame mode for MOV to maximize cross-player and Explorer visibility.
-    return requested_mode == CoverMode.METADATA and video_path.suffix.lower() == ".mov"
+@dataclass(frozen=True, slots=True)
+class CoverFormatPolicy:
+    extension: str
+    metadata_strategy: str
+    note: str
+
+
+_COVER_POLICY_TABLE: dict[str, CoverFormatPolicy] = {
+    ".mp4": CoverFormatPolicy(".mp4", "attached_pic", "MP4 使用 attached_pic 封面流"),
+    ".m4v": CoverFormatPolicy(".m4v", "attached_pic", "M4V 使用 attached_pic 封面流"),
+    ".3gp": CoverFormatPolicy(".3gp", "attached_pic", "3GP 使用 attached_pic 封面流"),
+    ".mov": CoverFormatPolicy(".mov", "attached_pic", "MOV 使用 QuickTime/iTunes cover atom"),
+    ".mkv": CoverFormatPolicy(".mkv", "mkv_attachment", "MKV 使用 attachment 封面"),
+    ".avi": CoverFormatPolicy(".avi", "first_frame_only", "AVI 无通用封面元数据通道，使用首帧"),
+    ".webm": CoverFormatPolicy(".webm", "first_frame_only", "WebM 无通用封面元数据通道，使用首帧"),
+    ".flv": CoverFormatPolicy(".flv", "first_frame_only", "FLV 无通用封面元数据通道，使用首帧"),
+    ".wmv": CoverFormatPolicy(".wmv", "first_frame_only", "WMV 无通用封面元数据通道，使用首帧"),
+    ".mpeg": CoverFormatPolicy(".mpeg", "first_frame_only", "MPEG Program Stream 无通用封面元数据通道，使用首帧"),
+    ".mpg": CoverFormatPolicy(".mpg", "first_frame_only", "MPG 无通用封面元数据通道，使用首帧"),
+    ".ts": CoverFormatPolicy(".ts", "first_frame_only", "TS 无通用封面元数据通道，使用首帧"),
+    ".m2ts": CoverFormatPolicy(".m2ts", "first_frame_only", "M2TS 无通用封面元数据通道，使用首帧"),
+    ".rmvb": CoverFormatPolicy(".rmvb", "first_frame_only", "RMVB 无通用封面元数据通道，使用首帧"),
+}
+
+_DEFAULT_POLICY = CoverFormatPolicy(
+    extension="*",
+    metadata_strategy="first_frame_only",
+    note="未知容器：默认使用首帧以保证可见性",
+)
+
+
+def cover_policy_for_path(video_path: Path) -> CoverFormatPolicy:
+    return _COVER_POLICY_TABLE.get(video_path.suffix.lower(), _DEFAULT_POLICY)
+
+
+def resolve_metadata_mode(video_path: Path, requested_mode: CoverMode) -> tuple[CoverMode, CoverFormatPolicy]:
+    policy = cover_policy_for_path(video_path)
+    if requested_mode != CoverMode.METADATA:
+        return requested_mode, policy
+    if policy.metadata_strategy == "first_frame_only":
+        return CoverMode.FIRST_FRAME, policy
+    return CoverMode.METADATA, policy
 
 
 def _emit(stream_logs: bool, prefix: str, tag: str, message: str) -> None:
@@ -103,7 +142,18 @@ def _replace_in_place(temp_out: Path, original: Path) -> Path:
     return original
 
 
-def _run_metadata_mode(
+def _cover_mimetype(cover_path: Path) -> str:
+    ext = cover_path.suffix.lower()
+    if ext in {".jpg", ".jpeg"}:
+        return "image/jpeg"
+    if ext == ".png":
+        return "image/png"
+    if ext == ".webp":
+        return "image/webp"
+    return "application/octet-stream"
+
+
+def _run_metadata_mkv_attachment_mode(
     video_path: Path,
     cover_path: Path,
     out_path: Path,
@@ -111,6 +161,49 @@ def _run_metadata_mode(
     stream_logs: bool = False,
     log_verbosity: str = "medium",
 ) -> tuple[int, str, str, list[str]]:
+    prefix = f"[metadata-mkv:{video_path.name}]"
+    _emit(stream_logs, prefix, "START", "strategy=attachment")
+    args = [
+        str(bins.ffmpeg),
+        "-y",
+        "-i",
+        str(video_path),
+        "-map",
+        "0",
+        "-c",
+        "copy",
+        "-attach",
+        str(cover_path),
+        "-metadata:s:t:0",
+        f"mimetype={_cover_mimetype(cover_path)}",
+        "-metadata:s:t:0",
+        f"filename={cover_path.name}",
+        str(out_path),
+    ]
+    proc = run_cmd(args, stream_output=stream_logs, log_prefix=prefix, log_verbosity=log_verbosity)
+    trace = ["MKV:ok(attachment)"] if proc.returncode == 0 else [f"MKV:fail(exit={proc.returncode})"]
+    return proc.returncode, proc.stdout, proc.stderr, trace
+
+
+def _run_metadata_mode(
+    video_path: Path,
+    cover_path: Path,
+    out_path: Path,
+    bins: FfmpegBinaries,
+    metadata_strategy: str = "attached_pic",
+    stream_logs: bool = False,
+    log_verbosity: str = "medium",
+) -> tuple[int, str, str, list[str]]:
+    if metadata_strategy == "mkv_attachment":
+        return _run_metadata_mkv_attachment_mode(
+            video_path,
+            cover_path,
+            out_path,
+            bins,
+            stream_logs=stream_logs,
+            log_verbosity=log_verbosity,
+        )
+
     prefix = f"[metadata:{video_path.name}]"
     attempt_trace: list[str] = []
     _emit(stream_logs, prefix, "START", "strategy=metadata attempts=A(preserve),B(conservative)")
@@ -135,8 +228,10 @@ def _run_metadata_mode(
         "mjpeg",
         f"-disposition:v:{cover_output_index}",
         "attached_pic",
-        str(out_path),
     ]
+    if video_path.suffix.lower() in {".mov", ".mp4", ".m4v", ".3gp"}:
+        args_a.extend(["-movflags", "+use_metadata_tags"])
+    args_a.append(str(out_path))
     proc_a = run_cmd(
         args_a,
         stream_output=stream_logs,
@@ -176,8 +271,10 @@ def _run_metadata_mode(
         "mjpeg",
         "-disposition:v:1",
         "attached_pic",
-        str(out_path),
     ]
+    if video_path.suffix.lower() in {".mov", ".mp4", ".m4v", ".3gp"}:
+        args_b.extend(["-movflags", "+use_metadata_tags"])
+    args_b.append(str(out_path))
     proc_b = run_cmd(
         args_b,
         stream_output=stream_logs,
@@ -336,14 +433,16 @@ def process_in_place(
     if temp_out.exists():
         temp_out.unlink()
 
+    effective_mode, policy = resolve_metadata_mode(video_path, mode)
     selected_encoder = ""
     attempt_trace: list[str] = []
-    if mode == CoverMode.METADATA:
+    if effective_mode == CoverMode.METADATA:
         code, out, err, attempt_trace = _run_metadata_mode(
             video_path,
             cover_path,
             temp_out,
             bins,
+            metadata_strategy=policy.metadata_strategy,
             stream_logs=stream_logs,
             log_verbosity=log_verbosity,
         )
@@ -363,8 +462,10 @@ def process_in_place(
             temp_out.unlink()
         elapsed = int((time.perf_counter() - start) * 1000)
         warning = ""
-        if mode == CoverMode.METADATA:
+        if effective_mode == CoverMode.METADATA:
             warning = "元数据封面写入失败，已完成兼容重试。"
+        elif mode == CoverMode.METADATA and effective_mode == CoverMode.FIRST_FRAME:
+            warning = f"该格式不支持通用元数据封面，已自动使用首帧模式。({policy.note})"
         return JobResult(
             exit_code=code,
             elapsed_ms=elapsed,
@@ -384,6 +485,7 @@ def process_in_place(
         output_path=out_path,
         stdout_log=out,
         stderr_log=err,
+        warning=(f"元数据策略已按格式适配：{policy.note}" if mode == CoverMode.METADATA else ""),
         attempt_trace=attempt_trace,
         selected_encoder=selected_encoder,
     )
