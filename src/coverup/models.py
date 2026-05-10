@@ -74,7 +74,7 @@ class ScanOptions:
 @dataclass(slots=True)
 class VideoJob:
     video_path: Path
-    selected: bool = True
+    selected: bool = False
     cover_source: CoverSource = CoverSource.SAMPLED
     cover_path: Optional[Path] = None
     selected_sample_id: Optional[int] = None

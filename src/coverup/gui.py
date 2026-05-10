@@ -353,7 +353,7 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setAlignment(Qt.AlignCenter)
         checkbox = QCheckBox()
-        checkbox.setChecked(True)
+        checkbox.setChecked(False)
         checkbox.stateChanged.connect(lambda _state, r=row: self._on_selected_changed(r))
         layout.addWidget(checkbox)
         self.table.setCellWidget(row, self.COL_SELECTED, box)
