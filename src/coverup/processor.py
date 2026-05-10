@@ -29,6 +29,12 @@ def _cache_key(bins: FfmpegBinaries) -> str:
     return str(bins.ffmpeg)
 
 
+def should_force_first_frame_for_mov(video_path: Path, requested_mode: CoverMode) -> bool:
+    # Windows Explorer often does not surface MOV embedded attached_pic as visible cover.
+    # Use first-frame mode for MOV to maximize cross-player and Explorer visibility.
+    return requested_mode == CoverMode.METADATA and video_path.suffix.lower() == ".mov"
+
+
 def _emit(stream_logs: bool, prefix: str, tag: str, message: str) -> None:
     if not stream_logs:
         return

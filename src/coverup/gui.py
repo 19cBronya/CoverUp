@@ -45,7 +45,7 @@ from .models import (
     VideoJob,
 )
 from .probe import probe_video
-from .processor import process_in_place
+from .processor import process_in_place, should_force_first_frame_for_mov
 from .sampling import decide_window, sample_minute
 from .scanner import scan_videos
 
@@ -816,6 +816,37 @@ class MainWindow(QMainWindow):
             cover_path = Path(job.cover_path) if job.cover_path else Path()
             options = self.current_run_options
             verbosity = options.log_verbosity.value
+
+            if should_force_first_frame_for_mov(job.video_path, CoverMode.METADATA) and options.use_metadata:
+                first_result = process_in_place(
+                    job.video_path,
+                    cover_path,
+                    CoverMode.FIRST_FRAME,
+                    self.bins,
+                    probe,
+                    stream_logs=stream_logs,
+                    log_verbosity=verbosity,
+                )
+                first_attempt_note = self._build_attempt_note(first_result.attempt_trace)
+                if first_result.exit_code == 0:
+                    encoder_name = first_result.selected_encoder or "libx264"
+                    strategy = f"MOV兼容模式：跳过元数据，首帧成功({encoder_name})"
+                    if first_attempt_note:
+                        strategy = f"{strategy} [{first_attempt_note}]"
+                    return ProcessTaskResult(
+                        job_index=idx,
+                        final_status=JobStatus.SUCCESS,
+                        strategy_result=strategy,
+                        error="",
+                        old_path=job.video_path,
+                    )
+                return ProcessTaskResult(
+                    job_index=idx,
+                    final_status=JobStatus.FAILED,
+                    strategy_result="MOV兼容模式：首帧失败",
+                    error=self._summarize_error(first_result.stderr_log or "MOV 首帧执行失败"),
+                    old_path=job.video_path,
+                )
 
             if options.use_metadata:
                 meta_result = process_in_place(

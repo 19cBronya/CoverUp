@@ -4,7 +4,7 @@ import subprocess
 from pathlib import Path
 
 from coverup.models import CoverMode, ProbeResult
-from coverup.processor import process_in_place
+from coverup.processor import process_in_place, should_force_first_frame_for_mov
 
 
 def _probe() -> ProbeResult:
@@ -139,3 +139,13 @@ def test_metadata_returns_both_failures_when_compat_retry_also_fails(monkeypatch
     assert result.exit_code == 1
     assert result.attempt_trace == ["A:fail(exit=1)", "B:fail(exit=1)"]
     assert "兼容重试" in result.warning
+
+
+def test_mov_metadata_is_forced_to_first_frame() -> None:
+    assert should_force_first_frame_for_mov(Path("demo.mov"), CoverMode.METADATA) is True
+    assert should_force_first_frame_for_mov(Path("demo.MOV"), CoverMode.METADATA) is True
+
+
+def test_non_mov_or_non_metadata_keeps_original_mode() -> None:
+    assert should_force_first_frame_for_mov(Path("demo.mp4"), CoverMode.METADATA) is False
+    assert should_force_first_frame_for_mov(Path("demo.mov"), CoverMode.FIRST_FRAME) is False

@@ -9,7 +9,7 @@ from pathlib import Path
 from .ffmpeg_tools import FfmpegError, locate_binaries
 from .models import CoverMode, ProbeResult, SampleRequest, ScanOptions
 from .probe import probe_video
-from .processor import process_in_place
+from .processor import process_in_place, should_force_first_frame_for_mov
 from .sampling import sample_minute
 from .scanner import scan_videos
 
@@ -88,6 +88,8 @@ def run_cli(argv: list[str] | None = None) -> int:
         video = Path(payload["video_path"])
         cover = Path(payload["cover_path"])
         mode = CoverMode(payload.get("mode", CoverMode.METADATA.value))
+        if should_force_first_frame_for_mov(video, mode):
+            mode = CoverMode.FIRST_FRAME
         probe = probe_video(video, bins)
         result = process_in_place(video, cover, mode, bins, probe)
         print(json.dumps(asdict(result), ensure_ascii=False, indent=2, default=str))
@@ -95,6 +97,8 @@ def run_cli(argv: list[str] | None = None) -> int:
 
     if args.video and args.cover:
         mode = CoverMode(args.mode)
+        if should_force_first_frame_for_mov(args.video, mode):
+            mode = CoverMode.FIRST_FRAME
         probe = probe_video(args.video, bins)
         result = process_in_place(args.video, args.cover, mode, bins, probe)
         print(json.dumps(asdict(result), ensure_ascii=False, indent=2, default=str))
