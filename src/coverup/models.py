@@ -46,6 +46,7 @@ class ProbeResult:
     audio_codec: str
     has_attached_pic: bool
     metadata_cover_writable: bool
+    attached_pic_stream_index: Optional[int] = None
 
 
 @dataclass(slots=True)

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import hashlib
 import json
+import tempfile
 from pathlib import Path
 
 from .ffmpeg_tools import FfmpegBinaries, run_cmd
@@ -50,6 +52,19 @@ def _parse_fps(rate: str | None) -> float:
     return _safe_float(rate)
 
 
+def _cover_cache_dir() -> Path:
+    path = Path(tempfile.gettempdir()) / "coverup_original_cover_cache"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _cached_cover_path(video_path: Path) -> Path:
+    stat = video_path.stat()
+    token = f"{video_path.resolve()}::{stat.st_mtime_ns}::{stat.st_size}".encode("utf-8", errors="ignore")
+    key = hashlib.sha1(token).hexdigest()[:24]
+    return _cover_cache_dir() / f"{key}.png"
+
+
 def probe_video(
     video_path: Path,
     bins: FfmpegBinaries,
@@ -85,6 +100,7 @@ def probe_video(
     video_codec = ""
     audio_codec = ""
     has_attached_pic = False
+    attached_pic_stream_index: int | None = None
 
     for stream in streams:
         codec_type = stream.get("codec_type")
@@ -92,6 +108,7 @@ def probe_video(
             disp = stream.get("disposition") or {}
             if bool(disp.get("attached_pic")):
                 has_attached_pic = True
+                attached_pic_stream_index = _safe_int(str(stream.get("index")))
         if codec_type == "video" and width == 0 and not (stream.get("disposition") or {}).get("attached_pic"):
             width = _safe_int(str(stream.get("width")))
             height = _safe_int(str(stream.get("height")))
@@ -111,4 +128,49 @@ def probe_video(
         audio_codec=audio_codec,
         has_attached_pic=has_attached_pic,
         metadata_cover_writable=metadata_cover_writable,
+        attached_pic_stream_index=attached_pic_stream_index,
     )
+
+
+def extract_attached_cover_preview(
+    video_path: Path,
+    probe: ProbeResult,
+    bins: FfmpegBinaries,
+    stream_logs: bool = False,
+    log_verbosity: str = "medium",
+) -> Path | None:
+    if not probe.has_attached_pic or probe.attached_pic_stream_index is None:
+        return None
+
+    out_path = _cached_cover_path(video_path)
+    if out_path.exists():
+        return out_path
+
+    args = [
+        str(bins.ffmpeg),
+        "-y",
+        "-i",
+        str(video_path),
+        "-map",
+        f"0:{probe.attached_pic_stream_index}",
+        "-frames:v",
+        "1",
+        "-threads:v",
+        "1",
+        "-update",
+        "1",
+        "-c:v",
+        "png",
+        str(out_path),
+    ]
+    proc = run_cmd(
+        args,
+        stream_output=stream_logs,
+        log_prefix=f"[cover-preview:{video_path.name}]",
+        log_verbosity=log_verbosity,
+    )
+    if proc.returncode == 0 and out_path.exists():
+        return out_path
+    if out_path.exists():
+        out_path.unlink()
+    return None

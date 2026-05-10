@@ -44,7 +44,7 @@ from .models import (
     ScanOptions,
     VideoJob,
 )
-from .probe import probe_video
+from .probe import extract_attached_cover_preview, probe_video
 from .processor import process_in_place
 from .sampling import decide_window, sample_minute
 from .scanner import scan_videos
@@ -92,6 +92,7 @@ class SampleTaskResult:
 class ProbeTaskResult:
     job_index: int
     result: ProbeResult
+    original_cover_path: Path | None = None
 
 
 @dataclass(slots=True)
@@ -491,7 +492,14 @@ class MainWindow(QMainWindow):
                 stream_logs=stream_logs,
                 log_verbosity=verbosity,
             )
-            return ProbeTaskResult(job_index=job_index, result=result)
+            original_cover_path = extract_attached_cover_preview(
+                self.jobs[job_index].video_path,
+                result,
+                self.bins,
+                stream_logs=stream_logs,
+                log_verbosity=verbosity,
+            )
+            return ProbeTaskResult(job_index=job_index, result=result, original_cover_path=original_cover_path)
 
         worker = CallableWorker(fn)
         worker.signals.done.connect(self._on_probe_done)
@@ -507,6 +515,9 @@ class MainWindow(QMainWindow):
             return
         self.probes[idx] = payload.result
         self.jobs[idx].detected_has_cover = payload.result.has_attached_pic
+        if payload.original_cover_path is not None:
+            self.jobs[idx].original_cover_path = payload.original_cover_path
+            self._update_original_cover_preview(idx)
         self._render_row(idx)
         self._schedule_sample(idx, self.jobs[idx].minute_index, priority=0)
         if idx == self._current_index():
