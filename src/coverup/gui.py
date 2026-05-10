@@ -106,15 +106,16 @@ class ProcessTaskResult:
 
 class MainWindow(QMainWindow):
     COL_SELECTED = 0
-    COL_COVER = 1
-    COL_FILENAME = 2
-    COL_DIRECTORY = 3
-    COL_SOURCE = 4
-    COL_HAS_COVER = 5
-    COL_STATUS = 6
-    COL_STRATEGY = 7
-    COL_ERROR = 8
-    COL_MINUTE = 9
+    COL_ORIGINAL_COVER = 1
+    COL_MODIFIED_COVER = 2
+    COL_FILENAME = 3
+    COL_DIRECTORY = 4
+    COL_SOURCE = 5
+    COL_HAS_COVER = 6
+    COL_STATUS = 7
+    COL_STRATEGY = 8
+    COL_ERROR = 9
+    COL_MINUTE = 10
 
     def __init__(self, bins: FfmpegBinaries):
         super().__init__()
@@ -218,9 +219,9 @@ class MainWindow(QMainWindow):
 
         left = QWidget()
         left_layout = QVBoxLayout(left)
-        self.table = QTableWidget(0, 10)
+        self.table = QTableWidget(0, 11)
         self.table.setHorizontalHeaderLabels(
-            ["选择", "当前封面", "文件名", "目录", "封面来源", "已有元数据", "状态", "策略结果", "错误信息", "分钟窗口"]
+            ["选择", "当前封面", "修改后封面", "文件名", "目录", "封面来源", "已有元数据", "状态", "策略结果", "错误信息", "分钟窗口"]
         )
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SingleSelection)
@@ -335,7 +336,7 @@ class MainWindow(QMainWindow):
             self.table.insertRow(row)
             self._attach_selected_checkbox(row)
             self._attach_filename_editor(row)
-            self._update_cover_preview(row)
+            self._update_cover_previews(row)
             self._render_row(row)
             self._schedule_probe(row, priority=0)
             inserted += 1
@@ -438,14 +439,17 @@ class MainWindow(QMainWindow):
             return None, "Qt 像素图构建失败"
         return pix.scaled(width, height, Qt.KeepAspectRatio, Qt.SmoothTransformation), ""
 
-    def _update_cover_preview(self, row: int) -> None:
-        if row < 0 or row >= len(self.jobs):
-            return
-        label = QLabel("未选封面")
+    def _build_cover_label(self, empty_text: str) -> QLabel:
+        label = QLabel(empty_text)
         label.setAlignment(Qt.AlignCenter)
         label.setMinimumSize(QSize(150, 84))
         label.setStyleSheet("border: 1px solid #d9e0ea; border-radius: 6px; color: #4c5d73; background: #f8fbff;")
-        cover_path = self.jobs[row].cover_path
+        return label
+
+    def _update_cover_cell(self, row: int, col: int, cover_path: Path | None, empty_text: str) -> None:
+        if row < 0 or row >= len(self.jobs):
+            return
+        label = self._build_cover_label(empty_text)
         if cover_path and Path(cover_path).exists():
             pix, reason = self._load_image_preview(Path(cover_path), width=150, height=84)
             if pix is not None:
@@ -457,7 +461,21 @@ class MainWindow(QMainWindow):
                 if not job.error_message:
                     job.error_message = f"封面已生成，但本机预览失败：{reason}"
                     self._render_row(row)
-        self.table.setCellWidget(row, self.COL_COVER, label)
+        self.table.setCellWidget(row, col, label)
+
+    def _update_original_cover_preview(self, row: int) -> None:
+        if row < 0 or row >= len(self.jobs):
+            return
+        self._update_cover_cell(row, self.COL_ORIGINAL_COVER, self.jobs[row].original_cover_path, "未加载封面")
+
+    def _update_modified_cover_preview(self, row: int) -> None:
+        if row < 0 or row >= len(self.jobs):
+            return
+        self._update_cover_cell(row, self.COL_MODIFIED_COVER, self.jobs[row].cover_path, "未选封面")
+
+    def _update_cover_previews(self, row: int) -> None:
+        self._update_original_cover_preview(row)
+        self._update_modified_cover_preview(row)
 
     def _schedule_probe(self, job_index: int, priority: int = 0) -> None:
         if job_index in self.probe_inflight:
@@ -549,7 +567,9 @@ class MainWindow(QMainWindow):
         ):
             job.selected_sample_id = 0
             job.cover_path = payload.result.thumbnail_paths[0]
-            self._update_cover_preview(payload.job_index)
+        if job.original_cover_path is None and payload.result.thumbnail_paths:
+            job.original_cover_path = payload.result.thumbnail_paths[0]
+        self._update_cover_previews(payload.job_index)
 
         if payload.job_index == self._current_index() and job.minute_index == payload.minute_index:
             self._refresh_samples(payload.job_index, payload.minute_index)
@@ -630,7 +650,7 @@ class MainWindow(QMainWindow):
         job.cover_path = Path(file_path)
         job.selected_sample_id = None
         job.error_message = ""
-        self._update_cover_preview(idx)
+        self._update_modified_cover_preview(idx)
         self._render_row(idx)
 
     def _on_sample_selected(self, item: QListWidgetItem) -> None:
@@ -649,7 +669,7 @@ class MainWindow(QMainWindow):
         job.selected_sample_id = sample_id
         job.cover_path = result.thumbnail_paths[sample_id]
         job.error_message = ""
-        self._update_cover_preview(idx)
+        self._update_modified_cover_preview(idx)
         self._render_row(idx)
 
     def _on_next_minute(self) -> None:
@@ -666,7 +686,7 @@ class MainWindow(QMainWindow):
         job.cover_source = CoverSource.SAMPLED
         job.selected_sample_id = None
         job.cover_path = None
-        self._update_cover_preview(idx)
+        self._update_modified_cover_preview(idx)
         self._render_row(idx)
         self._schedule_sample(idx, job.minute_index, priority=20)
         self._refresh_samples(idx, job.minute_index)
@@ -769,7 +789,9 @@ class MainWindow(QMainWindow):
         job.cover_source = CoverSource.SAMPLED
         job.selected_sample_id = 0
         job.cover_path = result.thumbnail_paths[0]
-        self._update_cover_preview(idx)
+        if job.original_cover_path is None:
+            job.original_cover_path = result.thumbnail_paths[0]
+        self._update_cover_previews(idx)
         if idx == self._current_index():
             self._refresh_samples(idx, job.minute_index)
         return True
@@ -982,7 +1004,7 @@ class MainWindow(QMainWindow):
             except Exception as err:  # noqa: BLE001
                 job.status = JobStatus.FAILED
                 job.error_message = f"改名失败: {err}"
-        self._update_cover_preview(idx)
+        self._update_cover_previews(idx)
         self._render_row(idx)
         if idx == self._current_index():
             self._refresh_detail(idx)

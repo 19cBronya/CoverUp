@@ -58,7 +58,29 @@ def _sample_dir_key(video_path: Path, minute_index: int) -> Path:
     return path
 
 
-def _build_extract_args(video_path: Path, point: float, out_path: Path, accurate_seek: bool) -> list[str]:
+def _build_extract_args(
+    video_path: Path,
+    point: float,
+    out_path: Path,
+    accurate_seek: bool,
+    image_ext: str,
+) -> list[str]:
+    if image_ext.lower() == "png":
+        codec_args = ["-c:v", "png", "-compression_level", "2"]
+    else:
+        codec_args = ["-c:v", "mjpeg", "-q:v", "2"]
+
+    extract_args = [
+        "-frames:v",
+        "1",
+        "-threads:v",
+        "1",
+        "-update",
+        "1",
+        *codec_args,
+        str(out_path),
+    ]
+
     if accurate_seek:
         # Some MOV/network files fail when seeking before input; retry with output-seek.
         return [
@@ -67,11 +89,7 @@ def _build_extract_args(video_path: Path, point: float, out_path: Path, accurate
             str(video_path),
             "-ss",
             f"{max(0.0, point):.3f}",
-            "-frames:v",
-            "1",
-            "-q:v",
-            "2",
-            str(out_path),
+            *extract_args,
         ]
     return [
         "-y",
@@ -79,28 +97,28 @@ def _build_extract_args(video_path: Path, point: float, out_path: Path, accurate
         f"{max(0.0, point):.3f}",
         "-i",
         str(video_path),
-        "-frames:v",
-        "1",
-        "-q:v",
-        "2",
-        str(out_path),
+        *extract_args,
     ]
 
 
 def _extract_frame_with_fallback(
     video_path: Path,
     point: float,
-    out_path: Path,
+    out_base_path: Path,
     bins: FfmpegBinaries,
     stream_logs: bool = False,
     log_verbosity: str = "medium",
-) -> None:
+) -> Path:
     attempts = (
-        ("fast-seek", _build_extract_args(video_path, point, out_path, accurate_seek=False)),
-        ("accurate-seek", _build_extract_args(video_path, point, out_path, accurate_seek=True)),
+        ("fast-seek-jpg", "jpg", False),
+        ("accurate-seek-jpg", "jpg", True),
+        ("fast-seek-png", "png", False),
+        ("accurate-seek-png", "png", True),
     )
     errors: list[str] = []
-    for name, sub_args in attempts:
+    for name, image_ext, accurate_seek in attempts:
+        out_path = out_base_path.with_suffix(f".{image_ext}")
+        sub_args = _build_extract_args(video_path, point, out_path, accurate_seek=accurate_seek, image_ext=image_ext)
         args = [str(bins.ffmpeg), *sub_args]
         proc = run_cmd(
             args,
@@ -109,14 +127,14 @@ def _extract_frame_with_fallback(
             log_verbosity=log_verbosity,
         )
         if proc.returncode == 0 and out_path.exists():
-            return
+            return out_path
         if out_path.exists():
             out_path.unlink()
         stderr = (proc.stderr or "").strip()
         stdout = (proc.stdout or "").strip()
         detail = stderr or stdout or "无 stderr/stdout"
-        errors.append(f"{name} returncode={proc.returncode}: {detail[-280:]}")
-    raise FfmpegError("抽帧失败（已重试两种 seek 方式）: " + " | ".join(errors))
+        errors.append(f"{name} returncode={proc.returncode}: {detail[-220:]}")
+    raise FfmpegError("抽帧失败（已重试 seek+编码格式 4 种组合）: " + " | ".join(errors))
 
 
 def sample_minute(
@@ -132,11 +150,11 @@ def sample_minute(
     thumbs: list[Path] = []
 
     for idx, point in enumerate(points):
-        out_path = thumb_dir / f"sample_{idx:02d}.jpg"
-        _extract_frame_with_fallback(
+        out_base = thumb_dir / f"sample_{idx:02d}"
+        out_path = _extract_frame_with_fallback(
             request.video_path,
             point,
-            out_path,
+            out_base,
             bins,
             stream_logs=stream_logs,
             log_verbosity=log_verbosity,
