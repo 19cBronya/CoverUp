@@ -4,7 +4,7 @@ import subprocess
 from pathlib import Path
 
 from coverup.models import CoverMode, ProbeResult
-from coverup.processor import cover_policy_for_path, process_in_place, resolve_metadata_mode
+from coverup.processor import cover_policy_for_path, process_in_place
 
 
 def _probe() -> ProbeResult:
@@ -142,14 +142,12 @@ def test_metadata_returns_both_failures_when_compat_retry_also_fails(monkeypatch
 
 
 def test_mov_uses_attached_pic_metadata_policy() -> None:
-    mode, policy = resolve_metadata_mode(Path("demo.mov"), CoverMode.METADATA)
-    assert mode == CoverMode.METADATA
+    policy = cover_policy_for_path(Path("demo.mov"))
     assert policy.metadata_strategy == "attached_pic"
 
 
-def test_first_frame_only_formats_auto_switch_when_requesting_metadata() -> None:
-    mode, policy = resolve_metadata_mode(Path("demo.ts"), CoverMode.METADATA)
-    assert mode == CoverMode.FIRST_FRAME
+def test_first_frame_only_formats_have_explicit_policy() -> None:
+    policy = cover_policy_for_path(Path("demo.ts"))
     assert policy.metadata_strategy == "first_frame_only"
 
 

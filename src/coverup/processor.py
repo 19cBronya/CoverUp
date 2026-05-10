@@ -4,10 +4,12 @@ import shutil
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Sequence
+from typing import Literal, Sequence
 
 from .ffmpeg_tools import FfmpegBinaries, FfmpegError, run_cmd
 from .models import CoverMode, JobResult, ProbeResult
+
+MetadataStrategy = Literal["attached_pic", "mkv_attachment", "first_frame_only"]
 
 
 def _tmp_output(video_path: Path) -> Path:
@@ -33,7 +35,7 @@ def _cache_key(bins: FfmpegBinaries) -> str:
 @dataclass(frozen=True, slots=True)
 class CoverFormatPolicy:
     extension: str
-    metadata_strategy: str
+    metadata_strategy: MetadataStrategy
     note: str
 
 
@@ -63,15 +65,6 @@ _DEFAULT_POLICY = CoverFormatPolicy(
 
 def cover_policy_for_path(video_path: Path) -> CoverFormatPolicy:
     return _COVER_POLICY_TABLE.get(video_path.suffix.lower(), _DEFAULT_POLICY)
-
-
-def resolve_metadata_mode(video_path: Path, requested_mode: CoverMode) -> tuple[CoverMode, CoverFormatPolicy]:
-    policy = cover_policy_for_path(video_path)
-    if requested_mode != CoverMode.METADATA:
-        return requested_mode, policy
-    if policy.metadata_strategy == "first_frame_only":
-        return CoverMode.FIRST_FRAME, policy
-    return CoverMode.METADATA, policy
 
 
 def _emit(stream_logs: bool, prefix: str, tag: str, message: str) -> None:
@@ -190,7 +183,7 @@ def _run_metadata_mode(
     cover_path: Path,
     out_path: Path,
     bins: FfmpegBinaries,
-    metadata_strategy: str = "attached_pic",
+    metadata_strategy: MetadataStrategy = "attached_pic",
     stream_logs: bool = False,
     log_verbosity: str = "medium",
 ) -> tuple[int, str, str, list[str]]:
