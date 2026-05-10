@@ -433,10 +433,20 @@ def process_in_place(
     if temp_out.exists():
         temp_out.unlink()
 
-    effective_mode, policy = resolve_metadata_mode(video_path, mode)
+    policy = cover_policy_for_path(video_path)
+    if mode == CoverMode.METADATA and policy.metadata_strategy == "first_frame_only":
+        elapsed = int((time.perf_counter() - start) * 1000)
+        return JobResult(
+            exit_code=2,
+            elapsed_ms=elapsed,
+            output_path=video_path,
+            warning=f"该格式不支持通用元数据封面，请按失败策略选择跳过或首帧。({policy.note})",
+            attempt_trace=["UNSUPPORTED:metadata"],
+        )
+
     selected_encoder = ""
     attempt_trace: list[str] = []
-    if effective_mode == CoverMode.METADATA:
+    if mode == CoverMode.METADATA:
         code, out, err, attempt_trace = _run_metadata_mode(
             video_path,
             cover_path,
@@ -462,10 +472,8 @@ def process_in_place(
             temp_out.unlink()
         elapsed = int((time.perf_counter() - start) * 1000)
         warning = ""
-        if effective_mode == CoverMode.METADATA:
+        if mode == CoverMode.METADATA:
             warning = "元数据封面写入失败，已完成兼容重试。"
-        elif mode == CoverMode.METADATA and effective_mode == CoverMode.FIRST_FRAME:
-            warning = f"该格式不支持通用元数据封面，已自动使用首帧模式。({policy.note})"
         return JobResult(
             exit_code=code,
             elapsed_ms=elapsed,

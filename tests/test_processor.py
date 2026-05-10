@@ -64,7 +64,7 @@ def test_process_temp_output_defaults_to_mp4_for_extensionless_path(monkeypatch,
     result = process_in_place(
         video_path=video,
         cover_path=cover,
-        mode=CoverMode.METADATA,
+        mode=CoverMode.FIRST_FRAME,
         bins=type("Bins", (), {"ffmpeg": Path("ffmpeg"), "ffprobe": Path("ffprobe")})(),
         probe=_probe(),
     )
@@ -187,3 +187,22 @@ def test_mkv_metadata_uses_attachment_strategy(monkeypatch, tmp_path: Path) -> N
     first_call = seen[0]
     assert "-attach" in first_call
     assert "-metadata:s:t:0" in first_call
+
+
+def test_metadata_mode_on_first_frame_only_format_returns_failure_semantics(tmp_path: Path) -> None:
+    video = tmp_path / "demo.ts"
+    cover = tmp_path / "cover.jpg"
+    video.write_bytes(b"v")
+    cover.write_bytes(b"c")
+
+    result = process_in_place(
+        video_path=video,
+        cover_path=cover,
+        mode=CoverMode.METADATA,
+        bins=type("Bins", (), {"ffmpeg": Path("ffmpeg"), "ffprobe": Path("ffprobe")})(),
+        probe=_probe(),
+    )
+
+    assert result.exit_code != 0
+    assert "不支持通用元数据封面" in result.warning
+    assert result.attempt_trace == ["UNSUPPORTED:metadata"]
