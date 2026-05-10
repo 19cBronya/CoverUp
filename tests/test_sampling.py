@@ -1,4 +1,8 @@
-from coverup.sampling import decide_window, uniform_points
+import subprocess
+from pathlib import Path
+
+from coverup.models import SampleRequest
+from coverup.sampling import decide_window, sample_minute, uniform_points
 
 
 def test_uniform_points_count_and_range() -> None:
@@ -31,3 +35,30 @@ def test_decide_window_short_video_loops() -> None:
     assert first.window_start == 0.0
     assert first.window_end == 20.0
     assert first.next_minute_index == 0
+
+
+def test_sample_minute_retries_with_accurate_seek(monkeypatch, tmp_path: Path) -> None:
+    video = tmp_path / "demo.mov"
+    video.write_bytes(b"v")
+    call_count = {"n": 0}
+
+    def fake_run_cmd(args, **_kwargs):
+        args = list(args)
+        call_count["n"] += 1
+        out = Path(args[-1])
+        if call_count["n"] == 1:
+            return subprocess.CompletedProcess(args=args, returncode=1, stdout="", stderr="Invalid argument")
+        out.write_bytes(b"jpeg")
+        return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr("coverup.sampling.run_cmd", fake_run_cmd)
+
+    result = sample_minute(
+        SampleRequest(video_path=video, minute_index=0, sample_count=1),
+        duration=20.0,
+        bins=type("Bins", (), {"ffmpeg": Path("ffmpeg"), "ffprobe": Path("ffprobe")})(),
+    )
+
+    assert len(result.thumbnail_paths) == 1
+    assert result.thumbnail_paths[0].exists()
+    assert call_count["n"] == 2

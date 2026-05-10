@@ -120,6 +120,14 @@ def _format_progress_fields(progress_fields: dict[str, str]) -> str:
     return f"进度 frame={frame} time={timestamp} fps={fps} speed={speed}"
 
 
+def _render_returncode(returncode: int) -> str:
+    # On Windows, negative exit codes may appear as unsigned 32-bit integers.
+    if returncode > 0x7FFFFFFF:
+        signed = returncode - 0x100000000
+        return f"{returncode} (signed {signed})"
+    return str(returncode)
+
+
 def run_cmd(
     args: Sequence[str],
     timeout: int | None = None,
@@ -240,7 +248,7 @@ def run_cmd(
 
     if check and completed.returncode != 0:
         raise FfmpegError(
-            f"命令失败(returncode={completed.returncode}): {' '.join(args)}\n"
+            f"命令失败(returncode={_render_returncode(completed.returncode)}): {' '.join(args)}\n"
             f"stderr:\n{completed.stderr.strip()}"
         )
     return completed

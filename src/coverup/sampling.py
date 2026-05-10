@@ -5,7 +5,7 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from .ffmpeg_tools import FfmpegBinaries, run_cmd
+from .ffmpeg_tools import FfmpegBinaries, FfmpegError, run_cmd
 from .models import SampleRequest, SampleResult
 
 
@@ -58,6 +58,55 @@ def _sample_dir_key(video_path: Path, minute_index: int) -> Path:
     return path
 
 
+def _build_extract_args(video_path: Path, point: float, out_path: Path, accurate_seek: bool) -> list[str]:
+    if accurate_seek:
+        # Some MOV/network files fail when seeking before input; retry with output-seek.
+        return [
+            "-y",
+            "-i",
+            str(video_path),
+            "-ss",
+            f"{max(0.0, point):.3f}",
+            "-frames:v",
+            "1",
+            "-q:v",
+            "2",
+            str(out_path),
+        ]
+    return [
+        "-y",
+        "-ss",
+        f"{max(0.0, point):.3f}",
+        "-i",
+        str(video_path),
+        "-frames:v",
+        "1",
+        "-q:v",
+        "2",
+        str(out_path),
+    ]
+
+
+def _extract_frame_with_fallback(video_path: Path, point: float, out_path: Path, bins: FfmpegBinaries) -> None:
+    attempts = (
+        ("fast-seek", _build_extract_args(video_path, point, out_path, accurate_seek=False)),
+        ("accurate-seek", _build_extract_args(video_path, point, out_path, accurate_seek=True)),
+    )
+    errors: list[str] = []
+    for name, sub_args in attempts:
+        args = [str(bins.ffmpeg), *sub_args]
+        proc = run_cmd(args)
+        if proc.returncode == 0 and out_path.exists():
+            return
+        if out_path.exists():
+            out_path.unlink()
+        stderr = (proc.stderr or "").strip()
+        stdout = (proc.stdout or "").strip()
+        detail = stderr or stdout or "无 stderr/stdout"
+        errors.append(f"{name} returncode={proc.returncode}: {detail[-280:]}")
+    raise FfmpegError("抽帧失败（已重试两种 seek 方式）: " + " | ".join(errors))
+
+
 def sample_minute(
     request: SampleRequest,
     duration: float,
@@ -70,20 +119,7 @@ def sample_minute(
 
     for idx, point in enumerate(points):
         out_path = thumb_dir / f"sample_{idx:02d}.jpg"
-        args = [
-            str(bins.ffmpeg),
-            "-y",
-            "-ss",
-            f"{max(0.0, point):.3f}",
-            "-i",
-            str(request.video_path),
-            "-frames:v",
-            "1",
-            "-q:v",
-            "2",
-            str(out_path),
-        ]
-        run_cmd(args, check=True)
+        _extract_frame_with_fallback(request.video_path, point, out_path, bins)
         thumbs.append(out_path)
 
     return SampleResult(
