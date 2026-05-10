@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Callable
 
 from PySide6.QtCore import QObject, QRunnable, QSize, Qt, QThreadPool, Signal
-from PySide6.QtGui import QIcon, QPixmap
+from PySide6.QtGui import QIcon, QImageReader, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -105,15 +105,16 @@ class ProcessTaskResult:
 
 
 class MainWindow(QMainWindow):
-    COL_COVER = 0
-    COL_FILENAME = 1
-    COL_DIRECTORY = 2
-    COL_SOURCE = 3
-    COL_HAS_COVER = 4
-    COL_STATUS = 5
-    COL_STRATEGY = 6
-    COL_ERROR = 7
-    COL_MINUTE = 8
+    COL_SELECTED = 0
+    COL_COVER = 1
+    COL_FILENAME = 2
+    COL_DIRECTORY = 3
+    COL_SOURCE = 4
+    COL_HAS_COVER = 5
+    COL_STATUS = 6
+    COL_STRATEGY = 7
+    COL_ERROR = 8
+    COL_MINUTE = 9
 
     def __init__(self, bins: FfmpegBinaries):
         super().__init__()
@@ -194,7 +195,7 @@ class MainWindow(QMainWindow):
         self.cmb_log_verbosity.addItem("原始", LogVerbosity.RAW.value)
         self.cmb_log_verbosity.setCurrentIndex(1)
         self.btn_run_all = QPushButton("执行全部")
-        self.btn_run_selected = QPushButton("执行当前")
+        self.btn_run_selected = QPushButton("执行选择")
         top.addWidget(self.btn_add_files)
         top.addWidget(self.btn_add_dir)
         top.addWidget(self.chk_recursive)
@@ -217,9 +218,9 @@ class MainWindow(QMainWindow):
 
         left = QWidget()
         left_layout = QVBoxLayout(left)
-        self.table = QTableWidget(0, 9)
+        self.table = QTableWidget(0, 10)
         self.table.setHorizontalHeaderLabels(
-            ["当前封面", "文件名", "目录", "封面来源", "已有元数据", "状态", "策略结果", "错误信息", "分钟窗口"]
+            ["选择", "当前封面", "文件名", "目录", "封面来源", "已有元数据", "状态", "策略结果", "错误信息", "分钟窗口"]
         )
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SingleSelection)
@@ -228,6 +229,8 @@ class MainWindow(QMainWindow):
         self.table.setAlternatingRowColors(True)
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(self.COL_SELECTED, QHeaderView.Fixed)
+        self.table.setColumnWidth(self.COL_SELECTED, 62)
         self.table.horizontalHeader().setSectionResizeMode(self.COL_ERROR, QHeaderView.Stretch)
         self.table.horizontalHeader().setSectionResizeMode(self.COL_FILENAME, QHeaderView.Stretch)
         left_layout.addWidget(self.table)
@@ -327,6 +330,7 @@ class MainWindow(QMainWindow):
             self.jobs.append(job)
             row = self.table.rowCount()
             self.table.insertRow(row)
+            self._attach_selected_checkbox(row)
             self._attach_filename_editor(row)
             self._update_cover_preview(row)
             self._render_row(row)
@@ -343,6 +347,29 @@ class MainWindow(QMainWindow):
         editor.editingFinished.connect(lambda r=row, e=editor: self._on_filename_edited(r, e.text()))
         self.table.setCellWidget(row, self.COL_FILENAME, editor)
 
+    def _attach_selected_checkbox(self, row: int) -> None:
+        box = QWidget()
+        layout = QHBoxLayout(box)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setAlignment(Qt.AlignCenter)
+        checkbox = QCheckBox()
+        checkbox.setChecked(True)
+        checkbox.stateChanged.connect(lambda _state, r=row: self._on_selected_changed(r))
+        layout.addWidget(checkbox)
+        self.table.setCellWidget(row, self.COL_SELECTED, box)
+
+    def _row_checkbox(self, row: int) -> QCheckBox | None:
+        widget = self.table.cellWidget(row, self.COL_SELECTED)
+        if widget is None:
+            return None
+        return widget.findChild(QCheckBox)
+
+    def _on_selected_changed(self, row: int) -> None:
+        if row < 0 or row >= len(self.jobs):
+            return
+        checkbox = self._row_checkbox(row)
+        self.jobs[row].selected = bool(checkbox and checkbox.isChecked())
+
     def _on_filename_edited(self, row: int, text: str) -> None:
         if row < 0 or row >= len(self.jobs):
             return
@@ -356,6 +383,11 @@ class MainWindow(QMainWindow):
         if row < 0 or row >= len(self.jobs):
             return
         job = self.jobs[row]
+        checkbox = self._row_checkbox(row)
+        if checkbox is not None and checkbox.isChecked() != job.selected:
+            checkbox.blockSignals(True)
+            checkbox.setChecked(job.selected)
+            checkbox.blockSignals(False)
 
         editor = self.table.cellWidget(row, self.COL_FILENAME)
         if isinstance(editor, QLineEdit):
@@ -389,6 +421,20 @@ class MainWindow(QMainWindow):
         worker.signals.finished.connect(lambda w=worker: self.active_workers.discard(w))
         self.pool.start(worker, priority=priority)
 
+    def _load_image_preview(self, image_path: Path, width: int, height: int) -> tuple[QPixmap | None, str]:
+        if not image_path.exists():
+            return None, "封面文件不存在"
+        reader = QImageReader(str(image_path))
+        reader.setAutoTransform(True)
+        image = reader.read()
+        if image.isNull():
+            reason = reader.errorString() or "Qt 图片解码失败"
+            return None, reason
+        pix = QPixmap.fromImage(image)
+        if pix.isNull():
+            return None, "Qt 像素图构建失败"
+        return pix.scaled(width, height, Qt.KeepAspectRatio, Qt.SmoothTransformation), ""
+
     def _update_cover_preview(self, row: int) -> None:
         if row < 0 or row >= len(self.jobs):
             return
@@ -398,9 +444,16 @@ class MainWindow(QMainWindow):
         label.setStyleSheet("border: 1px solid #d9e0ea; border-radius: 6px; color: #4c5d73; background: #f8fbff;")
         cover_path = self.jobs[row].cover_path
         if cover_path and Path(cover_path).exists():
-            pix = QPixmap(str(cover_path))
-            if not pix.isNull():
-                label.setPixmap(pix.scaled(150, 84, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+            pix, reason = self._load_image_preview(Path(cover_path), width=150, height=84)
+            if pix is not None:
+                label.setPixmap(pix)
+            else:
+                label.setText("预览失败")
+                label.setToolTip(f"{cover_path}\n{reason}")
+                job = self.jobs[row]
+                if not job.error_message:
+                    job.error_message = f"封面已生成，但本机预览失败：{reason}"
+                    self._render_row(row)
         self.table.setCellWidget(row, self.COL_COVER, label)
 
     def _schedule_probe(self, job_index: int, priority: int = 0) -> None:
@@ -522,17 +575,27 @@ class MainWindow(QMainWindow):
         if not result:
             self.lbl_window.setText(f"抽帧窗口：{minute_index} 分钟段生成中...")
             return
-        self.lbl_window.setText(
+        window_text = (
             f"抽帧窗口：{result.window_start:.1f}s - {result.window_end:.1f}s "
             f"{'(末尾窗口)' if result.is_tail_window else ''}"
         )
+        self.lbl_window.setText(window_text)
+        preview_failed = 0
         for i, image_path in enumerate(result.thumbnail_paths):
             item = QListWidgetItem(f"{result.time_points[i]:.2f}s")
-            pix = QPixmap(str(image_path))
-            if not pix.isNull():
+            pix, _reason = self._load_image_preview(Path(image_path), width=220, height=130)
+            if pix is not None:
                 item.setIcon(QIcon(pix))
+            else:
+                preview_failed += 1
             item.setData(Qt.UserRole, i)
             self.grid.addItem(item)
+        if preview_failed > 0:
+            self.lbl_window.setText(f"{window_text} | 预览异常 {preview_failed}/{len(result.thumbnail_paths)}")
+            job = self.jobs[idx]
+            if not job.error_message:
+                job.error_message = "抽帧文件已生成，但本机预览失败（可能是系统/Qt 图片解码插件问题）"
+                self._render_row(idx)
         selected = self.jobs[idx].selected_sample_id
         if selected is not None and 0 <= selected < self.grid.count():
             self.grid.setCurrentRow(selected)
@@ -592,14 +655,14 @@ class MainWindow(QMainWindow):
 
     def _run_candidates(self, only_selected: bool) -> list[int]:
         if only_selected:
-            idx = self._current_index()
-            if idx < 0:
-                return []
-            return [idx]
+            return [idx for idx, job in enumerate(self.jobs) if job.selected]
         return list(range(len(self.jobs)))
 
     def _on_run_selected(self) -> None:
         indices = self._run_candidates(only_selected=True)
+        if not indices:
+            QMessageBox.information(self, "未选择对象", "请先勾选至少一个条目。")
+            return
         self._start_processing(indices)
 
     def _on_run_all(self) -> None:
