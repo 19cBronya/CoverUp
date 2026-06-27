@@ -202,7 +202,7 @@ class MainWindow(QMainWindow):
         self.spin_concurrency.setRange(1, 4)
         self.spin_concurrency.setValue(2)
         self.spin_concurrency.setToolTip("同时处理的文件数")
-        self.spin_concurrency.setFixedWidth(42)
+        self.spin_concurrency.setFixedWidth(50)
         self.btn_run_all = QPushButton("执行全部")
         self.btn_run_selected = QPushButton("执行选择")
         top.addWidget(self.btn_add_files)
