@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QPushButton,
+    QSpinBox,
     QSplitter,
     QTableWidget,
     QTableWidgetItem,
@@ -135,7 +136,7 @@ class MainWindow(QMainWindow):
         self.processing_queue: list[int] = []
         self.current_run_options = RunOptions()
         self.processing_now = False
-        self.current_processing_index: int | None = None
+        self.processing_inflight: set[int] = set()
         self.active_workers: set[CallableWorker] = set()
 
         self._build_ui()
@@ -197,6 +198,11 @@ class MainWindow(QMainWindow):
         self.cmb_log_verbosity.addItem("中等", LogVerbosity.MEDIUM.value)
         self.cmb_log_verbosity.addItem("原始", LogVerbosity.RAW.value)
         self.cmb_log_verbosity.setCurrentIndex(1)
+        self.spin_concurrency = QSpinBox()
+        self.spin_concurrency.setRange(1, 4)
+        self.spin_concurrency.setValue(2)
+        self.spin_concurrency.setToolTip("同时处理的文件数")
+        self.spin_concurrency.setFixedWidth(42)
         self.btn_run_all = QPushButton("执行全部")
         self.btn_run_selected = QPushButton("执行选择")
         top.addWidget(self.btn_add_files)
@@ -211,6 +217,8 @@ class MainWindow(QMainWindow):
         top.addWidget(self.cmb_metadata_failure_action)
         top.addWidget(QLabel("日志："))
         top.addWidget(self.cmb_log_verbosity)
+        top.addWidget(QLabel("并发："))
+        top.addWidget(self.spin_concurrency)
         top.addStretch(1)
         top.addWidget(self.btn_run_selected)
         top.addWidget(self.btn_run_all)
@@ -861,58 +869,109 @@ class MainWindow(QMainWindow):
             return
         self.current_run_options = options
         self.processing_queue = filtered
+        self.processing_inflight.clear()
         self.processing_now = True
         self._run_next()
 
     def _run_next(self) -> None:
-        if not self.processing_queue:
+        if not self.processing_queue and not self.processing_inflight:
             self.processing_now = False
-            self.current_processing_index = None
             QMessageBox.information(self, "完成", "任务执行完成。")
             return
-        idx = self.processing_queue.pop(0)
-        self.current_processing_index = idx
-        job = self.jobs[idx]
-        job.status = JobStatus.RUNNING
-        self._render_row(idx)
-        stream_logs = self.chk_cmd_logs.isChecked()
 
-        def fn() -> ProcessTaskResult:
-            cover_path = Path(job.cover_path) if job.cover_path else Path()
-            options = self.current_run_options
-            verbosity = options.log_verbosity.value
-            probe = self.probes.get(idx) or probe_video(
-                job.video_path,
-                self.bins,
-                stream_logs=stream_logs,
-                log_verbosity=verbosity,
-            )
+        concurrency = self.spin_concurrency.value()
+        while self.processing_queue and len(self.processing_inflight) < concurrency:
+            idx = self.processing_queue.pop(0)
+            self.processing_inflight.add(idx)
+            job = self.jobs[idx]
+            job.status = JobStatus.RUNNING
+            self._render_row(idx)
+            stream_logs = self.chk_cmd_logs.isChecked()
 
-            if options.use_metadata:
-                meta_result = process_in_place(
+            def fn() -> ProcessTaskResult:
+                cover_path = Path(job.cover_path) if job.cover_path else Path()
+                options = self.current_run_options
+                verbosity = options.log_verbosity.value
+                probe = self.probes.get(idx) or probe_video(
                     job.video_path,
-                    cover_path,
-                    CoverMode.METADATA,
                     self.bins,
-                    probe,
                     stream_logs=stream_logs,
                     log_verbosity=verbosity,
                 )
-                meta_attempt_note = self._build_attempt_note(meta_result.attempt_trace)
-                if meta_result.exit_code == 0:
-                    strategy = "元数据成功"
+
+                if options.use_metadata:
+                    meta_result = process_in_place(
+                        job.video_path,
+                        cover_path,
+                        CoverMode.METADATA,
+                        self.bins,
+                        probe,
+                        stream_logs=stream_logs,
+                        log_verbosity=verbosity,
+                    )
+                    meta_attempt_note = self._build_attempt_note(meta_result.attempt_trace)
+                    if meta_result.exit_code == 0:
+                        strategy = "元数据成功"
+                        if meta_attempt_note:
+                            strategy = f"{strategy} [{meta_attempt_note}]"
+                        return ProcessTaskResult(
+                            job_index=idx,
+                            final_status=JobStatus.SUCCESS,
+                            strategy_result=strategy,
+                            error="",
+                            old_path=job.video_path,
+                        )
+
+                    meta_error = self._summarize_error(meta_result.stderr_log or meta_result.warning or "元数据写入失败")
+                    if options.metadata_failure_action == MetadataFailureAction.FIRST_FRAME:
+                        first_result = process_in_place(
+                            job.video_path,
+                            cover_path,
+                            CoverMode.FIRST_FRAME,
+                            self.bins,
+                            probe,
+                            stream_logs=stream_logs,
+                            log_verbosity=verbosity,
+                        )
+                        if first_result.exit_code == 0:
+                            encoder_name = first_result.selected_encoder or "libx264"
+                            first_attempt_note = self._build_attempt_note(first_result.attempt_trace)
+                            strategy = f"元数据失败，首帧成功({encoder_name})"
+                            if meta_attempt_note:
+                                strategy = f"{strategy} [meta:{meta_attempt_note}]"
+                            if first_attempt_note:
+                                strategy = f"{strategy} [first:{first_attempt_note}]"
+                            return ProcessTaskResult(
+                                job_index=idx,
+                                final_status=JobStatus.SUCCESS,
+                                strategy_result=strategy,
+                                error="",
+                                old_path=job.video_path,
+                            )
+                        first_error = self._summarize_error(first_result.stderr_log or "首帧重编码失败")
+                        strategy = "元数据失败，首帧重编码失败"
+                        if meta_attempt_note:
+                            strategy = f"{strategy} [meta:{meta_attempt_note}]"
+                        return ProcessTaskResult(
+                            job_index=idx,
+                            final_status=JobStatus.FAILED,
+                            strategy_result=strategy,
+                            error=f"{meta_error} | {first_error}"[:240],
+                            old_path=job.video_path,
+                        )
+
+                    strategy = "元数据失败，按策略跳过"
                     if meta_attempt_note:
                         strategy = f"{strategy} [{meta_attempt_note}]"
                     return ProcessTaskResult(
                         job_index=idx,
-                        final_status=JobStatus.SUCCESS,
+                        final_status=JobStatus.SKIPPED,
                         strategy_result=strategy,
-                        error="",
+                        error=meta_error,
                         old_path=job.video_path,
                     )
 
-                meta_error = self._summarize_error(meta_result.stderr_log or meta_result.warning or "元数据写入失败")
-                if options.metadata_failure_action == MetadataFailureAction.FIRST_FRAME:
+                if options.use_first_frame:
                     first_result = process_in_place(
                         job.video_path,
                         cover_path,
@@ -922,14 +981,12 @@ class MainWindow(QMainWindow):
                         stream_logs=stream_logs,
                         log_verbosity=verbosity,
                     )
+                    first_attempt_note = self._build_attempt_note(first_result.attempt_trace)
                     if first_result.exit_code == 0:
                         encoder_name = first_result.selected_encoder or "libx264"
-                        first_attempt_note = self._build_attempt_note(first_result.attempt_trace)
-                        strategy = f"元数据失败，首帧成功({encoder_name})"
-                        if meta_attempt_note:
-                            strategy = f"{strategy} [meta:{meta_attempt_note}]"
+                        strategy = f"首帧成功({encoder_name})"
                         if first_attempt_note:
-                            strategy = f"{strategy} [first:{first_attempt_note}]"
+                            strategy = f"{strategy} [{first_attempt_note}]"
                         return ProcessTaskResult(
                             job_index=idx,
                             final_status=JobStatus.SUCCESS,
@@ -937,77 +994,32 @@ class MainWindow(QMainWindow):
                             error="",
                             old_path=job.video_path,
                         )
-                    first_error = self._summarize_error(first_result.stderr_log or "首帧重编码失败")
-                    strategy = "元数据失败，首帧重编码失败"
-                    if meta_attempt_note:
-                        strategy = f"{strategy} [meta:{meta_attempt_note}]"
                     return ProcessTaskResult(
                         job_index=idx,
                         final_status=JobStatus.FAILED,
-                        strategy_result=strategy,
-                        error=f"{meta_error} | {first_error}"[:240],
+                        strategy_result="首帧失败",
+                        error=self._summarize_error(first_result.stderr_log or "首帧执行失败"),
                         old_path=job.video_path,
                     )
 
-                strategy = "元数据失败，按策略跳过"
-                if meta_attempt_note:
-                    strategy = f"{strategy} [{meta_attempt_note}]"
-                return ProcessTaskResult(
-                    job_index=idx,
-                    final_status=JobStatus.SKIPPED,
-                    strategy_result=strategy,
-                    error=meta_error,
-                    old_path=job.video_path,
-                )
-
-            if options.use_first_frame:
-                first_result = process_in_place(
-                    job.video_path,
-                    cover_path,
-                    CoverMode.FIRST_FRAME,
-                    self.bins,
-                    probe,
-                    stream_logs=stream_logs,
-                    log_verbosity=verbosity,
-                )
-                first_attempt_note = self._build_attempt_note(first_result.attempt_trace)
-                if first_result.exit_code == 0:
-                    encoder_name = first_result.selected_encoder or "libx264"
-                    strategy = f"首帧成功({encoder_name})"
-                    if first_attempt_note:
-                        strategy = f"{strategy} [{first_attempt_note}]"
-                    return ProcessTaskResult(
-                        job_index=idx,
-                        final_status=JobStatus.SUCCESS,
-                        strategy_result=strategy,
-                        error="",
-                        old_path=job.video_path,
-                    )
                 return ProcessTaskResult(
                     job_index=idx,
                     final_status=JobStatus.FAILED,
-                    strategy_result="首帧失败",
-                    error=self._summarize_error(first_result.stderr_log or "首帧执行失败"),
+                    strategy_result="执行失败",
+                    error="未选择执行策略",
                     old_path=job.video_path,
                 )
 
-            return ProcessTaskResult(
-                job_index=idx,
-                final_status=JobStatus.FAILED,
-                strategy_result="执行失败",
-                error="未选择执行策略",
-                old_path=job.video_path,
-            )
-
-        worker = CallableWorker(fn)
-        worker.signals.done.connect(self._on_process_done)
-        worker.signals.failed.connect(self._on_process_failed)
-        self._start_worker(worker, priority=20)
+            worker = CallableWorker(fn)
+            worker.signals.done.connect(self._on_process_done)
+            worker.signals.failed.connect(lambda msg, i=idx: self._on_process_failed(i, msg))
+            self._start_worker(worker, priority=20)
 
     def _on_process_done(self, payload: object) -> None:
         if not isinstance(payload, ProcessTaskResult):
             return
         idx = payload.job_index
+        self.processing_inflight.discard(idx)
         if idx < 0 or idx >= len(self.jobs):
             self._run_next()
             return
@@ -1029,9 +1041,9 @@ class MainWindow(QMainWindow):
             self._refresh_detail(idx)
         self._run_next()
 
-    def _on_process_failed(self, msg: str) -> None:
-        idx = self.current_processing_index
-        if idx is not None and 0 <= idx < len(self.jobs):
+    def _on_process_failed(self, idx: int, msg: str) -> None:
+        self.processing_inflight.discard(idx)
+        if 0 <= idx < len(self.jobs):
             self.jobs[idx].status = JobStatus.FAILED
             self.jobs[idx].strategy_result = "执行异常"
             self.jobs[idx].error_message = msg[:240]
