@@ -190,6 +190,7 @@ class MainWindow(QMainWindow):
         self.cmb_metadata_failure_action = QComboBox()
         self.cmb_metadata_failure_action.addItem("失败后跳过", MetadataFailureAction.SKIP.value)
         self.cmb_metadata_failure_action.addItem("失败后首帧重编码", MetadataFailureAction.FIRST_FRAME.value)
+        self.cmb_metadata_failure_action.addItem("直接首帧", MetadataFailureAction.DIRECT_FIRST_FRAME.value)
         self.cmb_metadata_failure_action.setCurrentIndex(0)
         self.cmb_log_verbosity = QComboBox()
         self.cmb_log_verbosity.addItem("紧凑", LogVerbosity.COMPACT.value)
@@ -291,6 +292,13 @@ class MainWindow(QMainWindow):
     def _current_options(self) -> RunOptions:
         action_value = self.cmb_metadata_failure_action.currentData() or MetadataFailureAction.SKIP.value
         verbosity_value = self._current_log_verbosity()
+        if action_value == MetadataFailureAction.DIRECT_FIRST_FRAME.value:
+            return RunOptions(
+                use_metadata=False,
+                use_first_frame=True,
+                metadata_failure_action=MetadataFailureAction(action_value),
+                log_verbosity=LogVerbosity(verbosity_value),
+            )
         return RunOptions(
             use_metadata=self.chk_mode_metadata.isChecked(),
             use_first_frame=self.chk_mode_first_frame.isChecked(),

@@ -27,6 +27,7 @@ class JobStatus(str, Enum):
 class MetadataFailureAction(str, Enum):
     SKIP = "skip"
     FIRST_FRAME = "first_frame"
+    DIRECT_FIRST_FRAME = "direct_first_frame"
 
 
 class LogVerbosity(str, Enum):
