@@ -631,7 +631,11 @@ class MainWindow(QMainWindow):
     def _attach_filename_editor(self, row: int) -> None:
         editor = QLineEdit()
         editor.setPlaceholderText("输入新文件名（不含扩展名）")
-        editor.editingFinished.connect(lambda r=row, e=editor: self._on_filename_edited(r, e.text()))
+        video_key = str(self.jobs[row].video_path.resolve())
+        editor.setProperty("video_key", video_key)
+        editor.editingFinished.connect(
+            lambda e=editor: self._on_filename_edited_by_editor(e)
+        )
         self.table.setCellWidget(row, self.COL_FILENAME, editor)
 
     def _attach_selected_checkbox(self, row: int) -> None:
@@ -641,7 +645,13 @@ class MainWindow(QMainWindow):
         layout.setAlignment(Qt.AlignCenter)
         checkbox = QCheckBox()
         checkbox.setChecked(False)
-        checkbox.stateChanged.connect(lambda _state, r=row: self._on_selected_changed(r))
+        # Identify the job by its stable video_path, NOT by row number — rows
+        # shift after deletions, which would leave lambdas with stale indices.
+        video_key = str(self.jobs[row].video_path.resolve())
+        checkbox.setProperty("video_key", video_key)
+        checkbox.stateChanged.connect(
+            lambda _state, cb=checkbox: self._on_selected_changed_by_checkbox(cb)
+        )
         layout.addWidget(checkbox)
         self.table.setCellWidget(row, self.COL_SELECTED, box)
 
@@ -651,20 +661,33 @@ class MainWindow(QMainWindow):
             return None
         return widget.findChild(QCheckBox)
 
-    def _on_selected_changed(self, row: int) -> None:
-        if row < 0 or row >= len(self.jobs):
-            return
-        checkbox = self._row_checkbox(row)
-        self.jobs[row].selected = bool(checkbox and checkbox.isChecked())
+    def _find_job_index_by_key(self, video_key: str) -> int:
+        for idx, job in enumerate(self.jobs):
+            if str(job.video_path.resolve()) == video_key:
+                return idx
+        return -1
 
-    def _on_filename_edited(self, row: int, text: str) -> None:
-        if row < 0 or row >= len(self.jobs):
+    def _on_selected_changed_by_checkbox(self, checkbox: QCheckBox) -> None:
+        video_key = checkbox.property("video_key")
+        if not video_key:
             return
-        base = text.strip()
+        idx = self._find_job_index_by_key(video_key)
+        if idx < 0:
+            return
+        self.jobs[idx].selected = checkbox.isChecked()
+
+    def _on_filename_edited_by_editor(self, editor: QLineEdit) -> None:
+        video_key = editor.property("video_key")
+        if not video_key:
+            return
+        idx = self._find_job_index_by_key(video_key)
+        if idx < 0:
+            return
+        base = editor.text().strip()
         if not base:
-            base = self.jobs[row].video_path.stem
-        self.jobs[row].pending_filename = base
-        self._render_row(row)
+            base = self.jobs[idx].video_path.stem
+        self.jobs[idx].pending_filename = base
+        self._render_row(idx)
 
     def _render_row(self, row: int) -> None:
         if row < 0 or row >= len(self.jobs):
