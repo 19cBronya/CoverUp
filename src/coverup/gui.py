@@ -1124,6 +1124,21 @@ class MainWindow(QMainWindow):
         # Re-key remaining probe entries (indices shift after removal)
         self.probes = {(k - 1 if k > idx else k): v for k, v in self.probes.items()}
 
+        # Re-key probe_inflight so stale indices don't corrupt future probes
+        self.probe_inflight.discard(idx)
+        self.probe_inflight = {(i - 1 if i > idx else i) for i in self.probe_inflight}
+
+        # Re-key processing_queue — remove the deleted index, shift the rest
+        self.processing_queue = [
+            i - 1 if i > idx else i
+            for i in self.processing_queue
+            if i != idx
+        ]
+
+        # Re-key processing_inflight — discard deleted, shift the rest
+        self.processing_inflight.discard(idx)
+        self.processing_inflight = {(i - 1 if i > idx else i) for i in self.processing_inflight}
+
         # Remove from jobs list and table
         del self.jobs[idx]
         self.table.removeRow(idx)
@@ -1191,9 +1206,25 @@ class MainWindow(QMainWindow):
             moved[(new_key, minute_idx)] = value
             del self.sample_cache[(video_key, minute_idx)]
         self.sample_cache.update(moved)
+        # Also re-key any inflight sample entries so they aren't left
+        # pointing at the old path (which would leak inflight slots).
+        for entry in list(self.sample_inflight):
+            video_key, minute_idx = entry
+            if video_key != old_key:
+                continue
+            self.sample_inflight.discard(entry)
+            self.sample_inflight.add((new_key, minute_idx))
         job.video_path = target
         job.applied_filename = target.name
         job.pending_filename = final_base
+        # Update widget video_key properties so checkbox and filename-editor
+        # interactions still find the correct job after the path changes.
+        checkbox = self._row_checkbox(idx)
+        if checkbox is not None:
+            checkbox.setProperty("video_key", new_key)
+        editor = self.table.cellWidget(idx, self.COL_FILENAME)
+        if isinstance(editor, QLineEdit):
+            editor.setProperty("video_key", new_key)
         return target
 
     def _ensure_cover_selected(self, idx: int) -> bool:
