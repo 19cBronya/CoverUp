@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
@@ -132,7 +133,7 @@ class MainWindow(QMainWindow):
         self.sample_cache: dict[tuple[str, int], SampleResult] = {}
         self.sample_inflight: set[tuple[str, int]] = set()
         self.probe_inflight: set[int] = set()
-        self.processing_queue: list[int] = []
+        self.processing_queue: deque[int] = deque()
         self.current_run_options = RunOptions()
         self.processing_now = False
         self.processing_inflight: set[int] = set()
@@ -830,6 +831,7 @@ class MainWindow(QMainWindow):
         worker = CallableWorker(fn)
         worker.signals.done.connect(self._on_probe_done)
         worker.signals.failed.connect(lambda msg, idx=job_index: self._on_probe_failed(idx, msg))
+        worker.signals.finished.connect(lambda i=job_index: self.probe_inflight.discard(i))
         self._start_worker(worker, priority=priority)
 
     def _on_probe_done(self, payload: object) -> None:
@@ -886,6 +888,7 @@ class MainWindow(QMainWindow):
         worker = CallableWorker(fn)
         worker.signals.done.connect(self._on_sample_done)
         worker.signals.failed.connect(lambda msg, k=key: self._on_sample_failed(k, msg))
+        worker.signals.finished.connect(lambda k=key: self.sample_inflight.discard(k))
         self._start_worker(worker, priority=priority)
 
     def _on_sample_done(self, payload: object) -> None:
@@ -1099,18 +1102,19 @@ class MainWindow(QMainWindow):
             )
             # Still remove from list — the file may be in use or permission-denied,
             # but the user explicitly asked to delete it from the list.
-        else:
-            # Also clean up cover image / thumbnail files associated with this video
-            if job.cover_path and Path(job.cover_path).exists():
-                try:
-                    Path(job.cover_path).unlink(missing_ok=True)
-                except OSError:
-                    pass
-            if job.original_cover_path and Path(job.original_cover_path).exists():
-                try:
-                    Path(job.original_cover_path).unlink(missing_ok=True)
-                except OSError:
-                    pass
+
+        # Clean up cover image / thumbnail files regardless of whether the
+        # video file itself was successfully deleted.
+        if job.cover_path and Path(job.cover_path).exists():
+            try:
+                Path(job.cover_path).unlink(missing_ok=True)
+            except OSError:
+                pass
+        if job.original_cover_path and Path(job.original_cover_path).exists():
+            try:
+                Path(job.original_cover_path).unlink(missing_ok=True)
+            except OSError:
+                pass
 
         # Remove sample cache entries for this video
         video_key = str(file_path)
@@ -1129,11 +1133,11 @@ class MainWindow(QMainWindow):
         self.probe_inflight = {(i - 1 if i > idx else i) for i in self.probe_inflight}
 
         # Re-key processing_queue — remove the deleted index, shift the rest
-        self.processing_queue = [
+        self.processing_queue = deque(
             i - 1 if i > idx else i
             for i in self.processing_queue
             if i != idx
-        ]
+        )
 
         # Re-key processing_inflight — discard deleted, shift the rest
         self.processing_inflight.discard(idx)
@@ -1142,6 +1146,7 @@ class MainWindow(QMainWindow):
         # Remove from jobs list and table
         del self.jobs[idx]
         self.table.removeRow(idx)
+        self.grid.clear()
 
         # If table is now empty, reset detail panel
         if self.table.rowCount() == 0:
@@ -1356,7 +1361,7 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "处理中", "当前已有任务在执行。")
             return
         self.current_run_options = options
-        self.processing_queue = filtered
+        self.processing_queue = deque(filtered)
         self.processing_inflight.clear()
         self.processing_now = True
         self._run_next()
@@ -1369,7 +1374,7 @@ class MainWindow(QMainWindow):
 
         concurrency = self.spin_concurrency.value()
         while self.processing_queue and len(self.processing_inflight) < concurrency:
-            idx = self.processing_queue.pop(0)
+            idx = self.processing_queue.popleft()
             self.processing_inflight.add(idx)
             job = self.jobs[idx]
             job.status = JobStatus.RUNNING
