@@ -812,6 +812,24 @@ class MainWindow(QMainWindow):
                             job.selected_sample_id = grid_sample_id
                             job.cover_path = grid_cover
 
+        # Layer 2: reconstruct cover_path from selected_sample_id for ALL rows.
+        # selected_sample_id is the authoritative record of user intent —
+        # whenever it is set, the correct cover_path is always:
+        #   sample_cache[key].thumbnail_paths[selected_sample_id]
+        # Unlike Layer 1 (grid-sync), this layer covers non-current rows too,
+        # so jobs the user is not currently looking at also get verified.
+        if job.cover_source == CoverSource.SAMPLED and job.selected_sample_id is not None:
+            key = self._sample_key(idx, job.minute_index)
+            result = self.sample_cache.get(key)
+            if result is not None and 0 <= job.selected_sample_id < len(result.thumbnail_paths):
+                corrected = result.thumbnail_paths[job.selected_sample_id]
+                if job.cover_path != corrected:
+                    job.cover_path = corrected
+            elif result is not None:
+                # selected_sample_id out of range — reset to safe default
+                job.cover_path = result.thumbnail_paths[0]
+                job.selected_sample_id = 0
+
         if job.cover_path and Path(job.cover_path).exists():
             return True
 
