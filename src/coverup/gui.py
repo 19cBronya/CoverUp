@@ -82,21 +82,21 @@ class CallableWorker(QRunnable):
             return
 
 
-@dataclass(slots=True)
+@dataclass
 class SampleTaskResult:
     job_index: int
     minute_index: int
     result: SampleResult
 
 
-@dataclass(slots=True)
+@dataclass
 class ProbeTaskResult:
     job_index: int
     result: ProbeResult
     original_cover_path: Path | None = None
 
 
-@dataclass(slots=True)
+@dataclass
 class ProcessTaskResult:
     job_index: int
     final_status: JobStatus
@@ -1410,6 +1410,7 @@ class MainWindow(QMainWindow):
             worker = CallableWorker(fn)
             worker.signals.done.connect(self._on_process_done)
             worker.signals.failed.connect(lambda msg, i=idx: self._on_process_failed(i, msg))
+            worker.signals.finished.connect(lambda i=idx: self._on_processing_worker_finished(i))
             self._start_worker(worker, priority=20)
 
     def _on_process_done(self, payload: object) -> None:
@@ -1446,6 +1447,20 @@ class MainWindow(QMainWindow):
             self.jobs[idx].error_message = msg[:240]
             self._render_row(idx)
         self._run_next()
+
+    def _on_processing_worker_finished(self, idx: int) -> None:
+        """Safety net: if the ``done``/``failed`` signal was dropped (e.g. cross-thread
+        marshalling failure on a slots-based result object), the *finished* signal —
+        which carries no payload — still fires.  Use it to un-stall the queue so the
+        remaining jobs are dispatched."""
+        if idx in self.processing_inflight:
+            self.processing_inflight.discard(idx)
+            if 0 <= idx < len(self.jobs):
+                job = self.jobs[idx]
+                if job.status == JobStatus.RUNNING:
+                    job.status = JobStatus.IDLE
+                    self._render_row(idx)
+            self._run_next()
 
 
 def launch() -> int:
