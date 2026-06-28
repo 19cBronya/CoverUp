@@ -204,3 +204,157 @@ def test_metadata_mode_on_first_frame_only_format_returns_failure_semantics(tmp_
     assert result.exit_code != 0
     assert "不支持通用元数据封面" in result.warning
     assert result.attempt_trace == ["UNSUPPORTED:metadata"]
+
+
+# ---------------------------------------------------------------------------
+# MP4Box fast-path tests
+# ---------------------------------------------------------------------------
+
+
+def test_mp4box_metadata_success(monkeypatch, tmp_path: Path) -> None:
+    """MP4Box fast path succeeds on an .mp4 file."""
+    video = tmp_path / "demo.mp4"
+    cover = tmp_path / "cover.jpg"
+    video.write_bytes(b"video-data")
+    cover.write_bytes(b"cover-data")
+
+    captured: list[list[str]] = []
+
+    def fake_run_cmd(args, **_kwargs):
+        captured.append(list(args))
+        # MP4Box writes nothing to the output file; the copy is already there.
+        return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr("coverup.processor.run_cmd", fake_run_cmd)
+
+    bins = type("Bins", (), {"ffmpeg": Path("ffmpeg"), "ffprobe": Path("ffprobe"), "mp4box": Path("MP4Box")})()
+
+    result = process_in_place(
+        video_path=video,
+        cover_path=cover,
+        mode=CoverMode.METADATA,
+        bins=bins,
+        probe=_probe(),
+    )
+
+    assert result.exit_code == 0
+    assert result.attempt_trace == ["MP4BOX:ok(itags)"]
+    # Verify MP4Box was called with the expected arguments.
+    assert captured
+    mp4box_call = captured[0]
+    assert mp4box_call[0].endswith("MP4Box")
+    assert "-itags" in mp4box_call
+    assert any(cover.name in arg for arg in mp4box_call)
+    # Output file should be the temp file (ends with .coverup.tmp.mp4).
+    assert mp4box_call[-1].endswith(".coverup.tmp.mp4")
+
+
+def test_mp4box_metadata_falls_back_to_ffmpeg(monkeypatch, tmp_path: Path) -> None:
+    """When MP4Box fails, fall through to FFmpeg metadata mode."""
+    video = tmp_path / "demo.mp4"
+    cover = tmp_path / "cover.jpg"
+    video.write_bytes(b"video-data")
+    cover.write_bytes(b"cover-data")
+
+    captured: list[list[str]] = []
+    calls = {"count": 0}
+
+    def fake_run_cmd(args, **_kwargs):
+        args_list = list(args)
+        captured.append(args_list)
+        calls["count"] += 1
+        # First call is MP4Box — simulate failure.
+        if calls["count"] == 1:
+            return subprocess.CompletedProcess(args=args_list, returncode=1, stdout="", stderr="mp4box error")
+        # Second call is FFmpeg — simulate success.
+        Path(args_list[-1]).write_bytes(b"ok")
+        return subprocess.CompletedProcess(args=args_list, returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr("coverup.processor.run_cmd", fake_run_cmd)
+
+    bins = type("Bins", (), {"ffmpeg": Path("ffmpeg"), "ffprobe": Path("ffprobe"), "mp4box": Path("MP4Box")})()
+
+    result = process_in_place(
+        video_path=video,
+        cover_path=cover,
+        mode=CoverMode.METADATA,
+        bins=bins,
+        probe=_probe(),
+    )
+
+    assert result.exit_code == 0
+    # Should show FFmpeg's metadata success trace (the fallback path).
+    assert any("ok" in t for t in result.attempt_trace)
+    assert not any("MP4BOX" in t for t in result.attempt_trace)
+    # First call should be MP4Box.
+    assert captured[0][0].endswith("MP4Box")
+    # A subsequent call should be FFmpeg (the metadata writer).
+    assert any(call[0].endswith("ffmpeg") for call in captured)
+
+
+def test_mp4box_skipped_when_unavailable(monkeypatch, tmp_path: Path) -> None:
+    """When MP4Box is not available, use FFmpeg directly."""
+    video = tmp_path / "demo.mp4"
+    cover = tmp_path / "cover.jpg"
+    video.write_bytes(b"video-data")
+    cover.write_bytes(b"cover-data")
+
+    captured: list[list[str]] = []
+
+    def fake_run_cmd(args, **_kwargs):
+        args_list = list(args)
+        captured.append(args_list)
+        Path(args_list[-1]).write_bytes(b"ok")
+        return subprocess.CompletedProcess(args=args_list, returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr("coverup.processor.run_cmd", fake_run_cmd)
+
+    # No mp4box field at all — simulates older clients or missing binary.
+    bins = type("Bins", (), {"ffmpeg": Path("ffmpeg"), "ffprobe": Path("ffprobe")})()
+
+    result = process_in_place(
+        video_path=video,
+        cover_path=cover,
+        mode=CoverMode.METADATA,
+        bins=bins,
+        probe=_probe(),
+    )
+
+    assert result.exit_code == 0
+    # All calls should be ffmpeg — no MP4Box call.
+    assert all(call[0].endswith("ffmpeg") or call[0].endswith("ffprobe") for call in captured)
+    # The attempt_trace should show FFmpeg success, not MP4Box.
+    assert any("ok" in t for t in result.attempt_trace)
+
+
+def test_mp4box_skipped_for_non_iso_format(monkeypatch, tmp_path: Path) -> None:
+    """MKV files use FFmpeg attachment mode even when MP4Box is available."""
+    video = tmp_path / "demo.mkv"
+    cover = tmp_path / "cover.jpg"
+    video.write_bytes(b"video-data")
+    cover.write_bytes(b"cover-data")
+
+    captured: list[list[str]] = []
+
+    def fake_run_cmd(args, **_kwargs):
+        args_list = list(args)
+        captured.append(args_list)
+        Path(args_list[-1]).write_bytes(b"ok")
+        return subprocess.CompletedProcess(args=args_list, returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr("coverup.processor.run_cmd", fake_run_cmd)
+
+    bins = type("Bins", (), {"ffmpeg": Path("ffmpeg"), "ffprobe": Path("ffprobe"), "mp4box": Path("MP4Box")})()
+
+    result = process_in_place(
+        video_path=video,
+        cover_path=cover,
+        mode=CoverMode.METADATA,
+        bins=bins,
+        probe=_probe(),
+    )
+
+    assert result.exit_code == 0
+    # MKV should use FFmpeg attachment strategy, not MP4Box.
+    assert not any(call[0].endswith("MP4Box") for call in captured)
+    assert any("-attach" in call for call in captured)

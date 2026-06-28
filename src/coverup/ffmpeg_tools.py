@@ -23,6 +23,7 @@ def _repo_root() -> Path:
 class FfmpegBinaries:
     ffmpeg: Path
     ffprobe: Path
+    mp4box: Path | None = None
 
 
 class FfmpegError(RuntimeError):
@@ -36,18 +37,34 @@ def locate_binaries() -> FfmpegBinaries:
 
     bundled_ffmpeg = bundled_dir / ffmpeg_name
     bundled_ffprobe = bundled_dir / ffprobe_name
+    mp4box = locate_mp4box()
     if bundled_ffmpeg.exists() and bundled_ffprobe.exists():
-        return FfmpegBinaries(ffmpeg=bundled_ffmpeg, ffprobe=bundled_ffprobe)
+        return FfmpegBinaries(ffmpeg=bundled_ffmpeg, ffprobe=bundled_ffprobe, mp4box=mp4box)
 
     ffmpeg_path = shutil.which("ffmpeg")
     ffprobe_path = shutil.which("ffprobe")
     if ffmpeg_path and ffprobe_path:
-        return FfmpegBinaries(ffmpeg=Path(ffmpeg_path), ffprobe=Path(ffprobe_path))
+        return FfmpegBinaries(ffmpeg=Path(ffmpeg_path), ffprobe=Path(ffprobe_path), mp4box=mp4box)
 
     raise FfmpegError(
         "未找到 ffmpeg/ffprobe。请将 ffmpeg.exe 与 ffprobe.exe 放入 bin/windows/，"
         "或将它们加入系统 PATH。"
     )
+
+
+def locate_mp4box() -> Path | None:
+    """Try to locate MP4Box (GPAC) for fast metadata cover insertion.
+
+    Returns the path if found, or None if unavailable.
+    """
+    mp4box_name = "MP4Box.exe" if sys.platform.startswith("win") else "MP4Box"
+    bundled = _repo_root() / "bin" / "windows" / mp4box_name
+    if bundled.exists():
+        return bundled
+    mp4box_path = shutil.which("MP4Box")
+    if mp4box_path:
+        return Path(mp4box_path)
+    return None
 
 
 _PROGRESS_FRAME_RE = re.compile(r"frame=\s*(\d+)")

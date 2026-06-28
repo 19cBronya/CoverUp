@@ -56,6 +56,8 @@ _COVER_POLICY_TABLE: dict[str, CoverFormatPolicy] = {
     ".rmvb": CoverFormatPolicy(".rmvb", "first_frame_only", "RMVB 无通用封面元数据通道，使用首帧"),
 }
 
+_MP4BOX_COMPATIBLE_SUFFIXES: frozenset[str] = frozenset({".mp4", ".m4v", ".3gp", ".mov"})
+
 _DEFAULT_POLICY = CoverFormatPolicy(
     extension="*",
     metadata_strategy="first_frame_only",
@@ -144,6 +146,41 @@ def _cover_mimetype(cover_path: Path) -> str:
     if ext == ".webp":
         return "image/webp"
     return "application/octet-stream"
+
+
+def _run_mp4box_metadata_mode(
+    video_path: Path,
+    cover_path: Path,
+    out_path: Path,
+    mp4box: Path,
+    stream_logs: bool = False,
+    log_verbosity: str = "medium",
+) -> tuple[int, str, str, list[str]]:
+    """Fast in-place metadata cover insertion via MP4Box.
+
+    MP4Box edits only the container's metadata atoms (moov/udta) without
+    touching the media data (mdat), making this a near-constant-time
+    operation regardless of file size.
+
+    This function expects ``out_path`` to already be a copy of the
+    original file — it edits it in place.
+    """
+    prefix = f"[metadata-mp4box:{video_path.name}]"
+    _emit(stream_logs, prefix, "START", "engine=mp4box strategy=itags")
+    args = [
+        str(mp4box),
+        "-itags",
+        f"cover={cover_path}",
+        str(out_path),
+    ]
+    proc = run_cmd(
+        args,
+        stream_output=stream_logs,
+        log_prefix=prefix,
+        log_verbosity=log_verbosity,
+    )
+    trace = ["MP4BOX:ok(itags)"] if proc.returncode == 0 else [f"MP4BOX:fail(exit={proc.returncode})"]
+    return proc.returncode, proc.stdout, proc.stderr, trace
 
 
 def _run_metadata_mkv_attachment_mode(
@@ -437,8 +474,53 @@ def process_in_place(
             attempt_trace=["UNSUPPORTED:metadata"],
         )
 
+    # --- MP4Box fast path for ISO Base Media formats ---
+    # MP4Box edits container metadata atoms in-place without touching
+    # media data, making cover insertion near-instant regardless of file size.
+    mp4box_fast_path = (
+        mode == CoverMode.METADATA
+        and video_path.suffix.lower() in _MP4BOX_COMPATIBLE_SUFFIXES
+        and getattr(bins, "mp4box", None) is not None
+    )
     selected_encoder = ""
     attempt_trace: list[str] = []
+
+    if mp4box_fast_path:
+        _emit(stream_logs, f"[fast:{video_path.name}]", "START", "mp4box-fast-path")
+        # Copy original to temp so MP4Box can edit in-place safely.
+        shutil.copy2(video_path, temp_out)
+        mp4box_bin: Path = getattr(bins, "mp4box")
+        mb_code, mb_out, mb_err, mb_trace = _run_mp4box_metadata_mode(
+            video_path,
+            cover_path,
+            temp_out,
+            mp4box_bin,
+            stream_logs=stream_logs,
+            log_verbosity=log_verbosity,
+        )
+        if mb_code == 0:
+            out_path = _replace_in_place(temp_out, video_path)
+            elapsed = int((time.perf_counter() - start) * 1000)
+            return JobResult(
+                exit_code=0,
+                elapsed_ms=elapsed,
+                output_path=out_path,
+                stdout_log=mb_out,
+                stderr_log=mb_err,
+                warning="",
+                attempt_trace=mb_trace,
+            )
+        # MP4Box failed — clean up and fall through to FFmpeg.
+        if temp_out.exists():
+            temp_out.unlink()
+        attempt_trace.extend(mb_trace)
+        _emit(
+            stream_logs,
+            f"[fast:{video_path.name}]",
+            "FALLBACK",
+            "MP4Box failed, falling back to FFmpeg metadata mode",
+        )
+
     if mode == CoverMode.METADATA:
         code, out, err, attempt_trace = _run_metadata_mode(
             video_path,
