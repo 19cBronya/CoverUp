@@ -138,6 +138,7 @@ class MainWindow(QMainWindow):
         self.processing_now = False
         self.processing_inflight: set[int] = set()
         self.active_workers: set[CallableWorker] = set()
+        self._refreshing_grid = False
 
         self._build_ui()
 
@@ -294,6 +295,7 @@ class MainWindow(QMainWindow):
         self.btn_upload_cover.clicked.connect(self._on_upload_cover)
         self.btn_next_minute.clicked.connect(self._on_next_minute)
         self.grid.itemClicked.connect(self._on_sample_selected)
+        self.grid.currentItemChanged.connect(self._on_grid_current_changed)
         self.btn_run_all.clicked.connect(self._on_run_all)
         self.btn_run_selected.clicked.connect(self._on_run_selected)
 
@@ -634,36 +636,40 @@ class MainWindow(QMainWindow):
             self.lbl_probe.setText("探测信息：加载中...")
 
     def _refresh_samples(self, idx: int, minute_index: int) -> None:
-        self.grid.clear()
-        key = self._sample_key(idx, minute_index)
-        result = self.sample_cache.get(key)
-        if not result:
-            self.lbl_window.setText(f"抽帧窗口：{minute_index} 分钟段生成中...")
-            return
-        window_text = (
-            f"抽帧窗口：{result.window_start:.1f}s - {result.window_end:.1f}s "
-            f"{'(末尾窗口)' if result.is_tail_window else ''}"
-        )
-        self.lbl_window.setText(window_text)
-        preview_failed = 0
-        for i, image_path in enumerate(result.thumbnail_paths):
-            item = QListWidgetItem(f"{result.time_points[i]:.2f}s")
-            pix, _reason = self._load_image_preview(Path(image_path), width=220, height=130)
-            if pix is not None:
-                item.setIcon(QIcon(pix))
-            else:
-                preview_failed += 1
-            item.setData(Qt.UserRole, i)
-            self.grid.addItem(item)
-        if preview_failed > 0:
-            self.lbl_window.setText(f"{window_text} | 预览异常 {preview_failed}/{len(result.thumbnail_paths)}")
-            job = self.jobs[idx]
-            if not job.error_message:
-                job.error_message = "抽帧文件已生成，但本机预览失败（可能是系统/Qt 图片解码插件问题）"
-                self._render_row(idx)
-        selected = self.jobs[idx].selected_sample_id
-        if selected is not None and 0 <= selected < self.grid.count():
-            self.grid.setCurrentRow(selected)
+        self._refreshing_grid = True
+        try:
+            self.grid.clear()
+            key = self._sample_key(idx, minute_index)
+            result = self.sample_cache.get(key)
+            if not result:
+                self.lbl_window.setText(f"抽帧窗口：{minute_index} 分钟段生成中...")
+                return
+            window_text = (
+                f"抽帧窗口：{result.window_start:.1f}s - {result.window_end:.1f}s "
+                f"{'(末尾窗口)' if result.is_tail_window else ''}"
+            )
+            self.lbl_window.setText(window_text)
+            preview_failed = 0
+            for i, image_path in enumerate(result.thumbnail_paths):
+                item = QListWidgetItem(f"{result.time_points[i]:.2f}s")
+                pix, _reason = self._load_image_preview(Path(image_path), width=220, height=130)
+                if pix is not None:
+                    item.setIcon(QIcon(pix))
+                else:
+                    preview_failed += 1
+                item.setData(Qt.UserRole, i)
+                self.grid.addItem(item)
+            if preview_failed > 0:
+                self.lbl_window.setText(f"{window_text} | 预览异常 {preview_failed}/{len(result.thumbnail_paths)}")
+                job = self.jobs[idx]
+                if not job.error_message:
+                    job.error_message = "抽帧文件已生成，但本机预览失败（可能是系统/Qt 图片解码插件问题）"
+                    self._render_row(idx)
+            selected = self.jobs[idx].selected_sample_id
+            if selected is not None and 0 <= selected < self.grid.count():
+                self.grid.setCurrentRow(selected)
+        finally:
+            self._refreshing_grid = False
 
     def _on_upload_cover(self) -> None:
         idx = self._current_index()
@@ -681,6 +687,17 @@ class MainWindow(QMainWindow):
         self._render_row(idx)
 
     def _on_sample_selected(self, item: QListWidgetItem) -> None:
+        if self._refreshing_grid:
+            return
+        self._apply_sample_selection(item)
+
+    def _on_grid_current_changed(self, current: QListWidgetItem, previous: QListWidgetItem) -> None:
+        if self._refreshing_grid:
+            return
+        if current is not None:
+            self._apply_sample_selection(current)
+
+    def _apply_sample_selection(self, item: QListWidgetItem) -> None:
         idx = self._current_index()
         if idx < 0:
             return
@@ -778,6 +795,23 @@ class MainWindow(QMainWindow):
         if idx < 0 or idx >= len(self.jobs):
             return False
         job = self.jobs[idx]
+
+        # 对当前正在预览的 job，从 grid 读取用户实际选择的封面
+        # 这确保即使用户点击缩略图的信号没有正确触发，也能使用正确的选择
+        if idx == self._current_index() and job.cover_source != CoverSource.UPLOAD:
+            current_item = self.grid.currentItem()
+            if current_item is not None:
+                key = self._sample_key(idx, job.minute_index)
+                result = self.sample_cache.get(key)
+                if result:
+                    grid_sample_id = int(current_item.data(Qt.UserRole))
+                    if 0 <= grid_sample_id < len(result.thumbnail_paths):
+                        grid_cover = result.thumbnail_paths[grid_sample_id]
+                        if grid_cover != job.cover_path:
+                            job.cover_source = CoverSource.SAMPLED
+                            job.selected_sample_id = grid_sample_id
+                            job.cover_path = grid_cover
+
         if job.cover_path and Path(job.cover_path).exists():
             return True
 
@@ -888,7 +922,7 @@ class MainWindow(QMainWindow):
             self._render_row(idx)
             stream_logs = self.chk_cmd_logs.isChecked()
 
-            def fn() -> ProcessTaskResult:
+            def fn(idx: int = idx, job: VideoJob = job) -> ProcessTaskResult:
                 cover_path = Path(job.cover_path) if job.cover_path else Path()
                 options = self.current_run_options
                 verbosity = options.log_verbosity.value
