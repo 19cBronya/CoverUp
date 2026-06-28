@@ -1148,6 +1148,15 @@ class MainWindow(QMainWindow):
         self.table.removeRow(idx)
         self.grid.clear()
 
+        # After removeRow, Qt shifts the remaining cell widgets (cover
+        # previews, checkboxes, editors) to their new rows.  However, the
+        # cover-preview QLabels still hold the pixmaps they were originally
+        # loaded with — they are not re-fetched from self.jobs.  Explicitly
+        # refresh every remaining row's cover previews so the images always
+        # match the job at the new index.
+        for r in range(self.table.rowCount()):
+            self._update_cover_previews(r)
+
         # If table is now empty, reset detail panel
         if self.table.rowCount() == 0:
             self.lbl_video.setText("未选择视频")
