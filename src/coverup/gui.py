@@ -13,7 +13,6 @@ from PySide6.QtWidgets import (
     QComboBox,
     QFileDialog,
     QFrame,
-    QGridLayout,
     QGroupBox,
     QHeaderView,
     QHBoxLayout,
@@ -112,13 +111,12 @@ class MainWindow(QMainWindow):
     COL_ORIGINAL_COVER = 1
     COL_MODIFIED_COVER = 2
     COL_FILENAME = 3
-    COL_DIRECTORY = 4
-    COL_SOURCE = 5
-    COL_HAS_COVER = 6
-    COL_STATUS = 7
-    COL_STRATEGY = 8
-    COL_ERROR = 9
-    COL_MINUTE = 10
+    COL_SOURCE = 4
+    COL_HAS_COVER = 5
+    COL_STATUS = 6
+    COL_STRATEGY = 7
+    COL_ERROR = 8
+    COL_MINUTE = 9
 
     def __init__(self, bins: FfmpegBinaries):
         super().__init__()
@@ -457,9 +455,9 @@ class MainWindow(QMainWindow):
         left = QWidget()
         left_layout = QVBoxLayout(left)
         left_layout.setContentsMargins(0, 0, 0, 0)
-        self.table = QTableWidget(0, 11)
+        self.table = QTableWidget(0, 10)
         self.table.setHorizontalHeaderLabels(
-            ["选择", "当前封面", "修改后封面", "文件名", "目录", "封面来源", "已有元数据", "状态", "策略结果", "错误信息", "分钟窗口"]
+            ["选择", "当前封面", "修改后封面", "文件名", "封面来源", "已有元数据", "状态", "策略结果", "错误信息", "分钟窗口"]
         )
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SingleSelection)
@@ -502,8 +500,10 @@ class MainWindow(QMainWindow):
         action_row.setSpacing(8)
         self.btn_upload_cover = QPushButton("上传封面图")
         self.btn_next_minute = QPushButton("下一分钟")
+        self.btn_delete_video = QPushButton("删除当前视频")
         action_row.addWidget(self.btn_upload_cover)
         action_row.addWidget(self.btn_next_minute)
+        action_row.addWidget(self.btn_delete_video)
         right_layout.addLayout(action_row)
 
         # Sample thumbnail grid
@@ -543,6 +543,7 @@ class MainWindow(QMainWindow):
         self.table.itemSelectionChanged.connect(self._on_selection_change)
         self.btn_upload_cover.clicked.connect(self._on_upload_cover)
         self.btn_next_minute.clicked.connect(self._on_next_minute)
+        self.btn_delete_video.clicked.connect(self._on_delete_video)
         self.grid.itemClicked.connect(self._on_sample_selected)
         self.grid.currentItemChanged.connect(self._on_grid_current_changed)
         self.btn_run_all.clicked.connect(self._on_run_all)
@@ -667,8 +668,6 @@ class MainWindow(QMainWindow):
                 editor.setText(job.pending_filename or job.video_path.stem)
             editor.setToolTip(str(job.video_path))
 
-        directory_short = job.video_path.parent.name or str(job.video_path.parent)
-
         # Status color mapping (system semantic colors)
         _status_color = {
             JobStatus.SUCCESS.value: "#34C759",
@@ -679,7 +678,6 @@ class MainWindow(QMainWindow):
         }
 
         values = {
-            self.COL_DIRECTORY: directory_short,
             self.COL_SOURCE: "上传" if job.cover_source == CoverSource.UPLOAD else "自动候选",
             self.COL_HAS_COVER: "-" if job.detected_has_cover is None else ("是" if job.detected_has_cover else "否"),
             self.COL_STATUS: job.status.value,
@@ -693,10 +691,7 @@ class MainWindow(QMainWindow):
                 item = QTableWidgetItem()
                 self.table.setItem(row, col, item)
             item.setText(text)
-            if col == self.COL_DIRECTORY:
-                item.setToolTip(str(job.video_path.parent))
-            else:
-                item.setToolTip("")
+            item.setToolTip("")
 
         # Apply color coding to status column
         status_item = self.table.item(row, self.COL_STATUS)
@@ -897,16 +892,32 @@ class MainWindow(QMainWindow):
         self._schedule_sample(idx, self.jobs[idx].minute_index, priority=10)
         self._refresh_samples(idx, self.jobs[idx].minute_index)
 
+    @staticmethod
+    def _format_size(size_bytes: int) -> str:
+        if size_bytes >= 1_000_000_000:
+            return f"{size_bytes / 1_000_000_000:.2f} GB"
+        if size_bytes >= 1_000_000:
+            return f"{size_bytes / 1_000_000:.2f} MB"
+        if size_bytes >= 1_000:
+            return f"{size_bytes / 1_000:.2f} KB"
+        return f"{size_bytes} B"
+
     def _refresh_detail(self, idx: int) -> None:
         if idx < 0 or idx >= len(self.jobs):
             return
         job = self.jobs[idx]
         self.lbl_video.setText(f"{job.video_path.name}   ({job.video_path.parent})")
+        try:
+            file_size = job.video_path.stat().st_size
+            size_str = self._format_size(file_size)
+        except OSError:
+            size_str = "未知"
         probe = self.probes.get(idx)
         if probe:
             self.lbl_probe.setText(
                 f"探测信息：{probe.format_name} | {probe.width}x{probe.height} | "
-                f"时长 {probe.duration:.2f}s | 已有封面: {'是' if probe.has_attached_pic else '否'}"
+                f"时长 {probe.duration:.2f}s | 大小 {size_str} | "
+                f"已有封面: {'是' if probe.has_attached_pic else '否'}"
             )
         else:
             self.lbl_probe.setText("探测信息：加载中...")
@@ -1010,6 +1021,50 @@ class MainWindow(QMainWindow):
         self._render_row(idx)
         self._schedule_sample(idx, job.minute_index, priority=20)
         self._refresh_samples(idx, job.minute_index)
+
+    def _on_delete_video(self) -> None:
+        idx = self._current_index()
+        if idx < 0:
+            QMessageBox.information(self, "未选择视频", "请先在左侧列表中选择一个视频。")
+            return
+        job = self.jobs[idx]
+        reply = QMessageBox.question(
+            self,
+            "确认删除",
+            f"确定要删除以下视频吗？\n\n{job.video_path.name}\n{job.video_path.parent}",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if reply != QMessageBox.Yes:
+            return
+
+        # Remove sample cache entries for this video
+        video_key = str(job.video_path.resolve())
+        stale_keys = [k for k in self.sample_cache if k[0] == video_key]
+        for k in stale_keys:
+            self.sample_cache.pop(k, None)
+        self.sample_inflight = {k for k in self.sample_inflight if k[0] != video_key}
+
+        # Remove probe data
+        self.probes.pop(idx, None)
+        # Re-key remaining probe entries (indices shift after removal)
+        self.probes = {(k - 1 if k > idx else k): v for k, v in self.probes.items()}
+
+        # Remove from jobs list and table
+        del self.jobs[idx]
+        self.table.removeRow(idx)
+
+        # If table is now empty, reset detail panel
+        if self.table.rowCount() == 0:
+            self.lbl_video.setText("未选择视频")
+            self.lbl_probe.setText("探测信息：—")
+            self.lbl_window.setText("抽帧窗口：—")
+            self.grid.clear()
+            return
+
+        # Select new row at same position (or last if we deleted the last row)
+        new_idx = min(idx, self.table.rowCount() - 1)
+        self.table.selectRow(new_idx)
 
     def _run_candidates(self, only_selected: bool) -> list[int]:
         if only_selected:

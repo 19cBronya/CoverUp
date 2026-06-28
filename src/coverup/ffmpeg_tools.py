@@ -208,15 +208,17 @@ def run_cmd(
                             now = time.perf_counter()
                             if value == "end" or now - last_progress_print >= 1.0:
                                 last_progress_print = now
-                                progress = _format_progress_fields(progress_fields)
-                                print(f"{prefix}[progress] {progress}", file=sys.stderr, flush=True)
+                                if verbosity != "compact":
+                                    progress = _format_progress_fields(progress_fields)
+                                    print(f"{prefix}[progress] {progress}", file=sys.stderr, flush=True)
                             continue
                     progress = _format_ffmpeg_progress(line_text)
                     if progress is not None:
                         now = time.perf_counter()
                         if now - last_progress_print >= 1.0:
                             last_progress_print = now
-                            print(f"{prefix}[progress] {progress}", file=sys.stderr, flush=True)
+                            if verbosity != "compact":
+                                print(f"{prefix}[progress] {progress}", file=sys.stderr, flush=True)
                         continue
                     if verbosity == "medium" and _is_ffmpeg_key_line(line_text):
                         print(f"{prefix}[info] {line_text}", file=sys.stderr, flush=True)
