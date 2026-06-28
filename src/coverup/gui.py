@@ -1052,8 +1052,33 @@ class MainWindow(QMainWindow):
         if reply != QMessageBox.Yes:
             return
 
+        # Attempt to delete the actual file from disk
+        file_path = job.video_path.resolve()
+        try:
+            file_path.unlink(missing_ok=True)
+        except OSError as err:
+            QMessageBox.warning(
+                self,
+                "删除文件失败",
+                f"无法删除文件：\n{file_path}\n\n{err}",
+            )
+            # Still remove from list — the file may be in use or permission-denied,
+            # but the user explicitly asked to delete it from the list.
+        else:
+            # Also clean up cover image / thumbnail files associated with this video
+            if job.cover_path and Path(job.cover_path).exists():
+                try:
+                    Path(job.cover_path).unlink(missing_ok=True)
+                except OSError:
+                    pass
+            if job.original_cover_path and Path(job.original_cover_path).exists():
+                try:
+                    Path(job.original_cover_path).unlink(missing_ok=True)
+                except OSError:
+                    pass
+
         # Remove sample cache entries for this video
-        video_key = str(job.video_path.resolve())
+        video_key = str(file_path)
         stale_keys = [k for k in self.sample_cache if k[0] == video_key]
         for k in stale_keys:
             self.sample_cache.pop(k, None)
