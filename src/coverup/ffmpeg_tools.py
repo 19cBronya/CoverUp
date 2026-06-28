@@ -163,7 +163,8 @@ def run_cmd(
     prefix = f"{log_prefix} " if log_prefix else ""
     if stream_output:
         run_args, progress_mode = _inject_progress_args(run_args, verbosity)
-        print(f"{prefix}[command] {' '.join(run_args)}", file=sys.stderr, flush=True)
+        if verbosity == "raw":
+            print(f"{prefix}[command] {' '.join(run_args)}", file=sys.stderr, flush=True)
         started = time.perf_counter()
         proc = subprocess.Popen(
             run_args,
@@ -253,7 +254,8 @@ def run_cmd(
         )
         elapsed = time.perf_counter() - started
         status = "ok" if completed.returncode == 0 else f"exit={completed.returncode}"
-        print(f"{prefix}[done] {status} elapsed={elapsed:.1f}s", file=sys.stderr, flush=True)
+        if verbosity != "compact":
+            print(f"{prefix}[done] {status} elapsed={elapsed:.1f}s", file=sys.stderr, flush=True)
     else:
         completed = subprocess.run(
             run_args,
