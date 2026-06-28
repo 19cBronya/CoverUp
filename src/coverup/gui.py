@@ -891,11 +891,14 @@ class MainWindow(QMainWindow):
     def _on_sample_done(self, payload: object) -> None:
         if not isinstance(payload, SampleTaskResult):
             return
-        key = self._sample_key(payload.job_index, payload.minute_index)
+        idx = payload.job_index
+        if idx < 0 or idx >= len(self.jobs):
+            return
+        key = self._sample_key(idx, payload.minute_index)
         self.sample_inflight.discard(key)
         self.sample_cache[key] = payload.result
 
-        job = self.jobs[payload.job_index]
+        job = self.jobs[idx]
         if (
             job.cover_source == CoverSource.SAMPLED
             and job.minute_index == payload.minute_index
@@ -906,10 +909,10 @@ class MainWindow(QMainWindow):
             job.cover_path = payload.result.thumbnail_paths[0]
         if job.original_cover_path is None and payload.result.thumbnail_paths:
             job.original_cover_path = payload.result.thumbnail_paths[0]
-        self._update_cover_previews(payload.job_index)
+        self._update_cover_previews(idx)
 
-        if payload.job_index == self._current_index() and job.minute_index == payload.minute_index:
-            self._refresh_samples(payload.job_index, payload.minute_index)
+        if idx == self._current_index() and job.minute_index == payload.minute_index:
+            self._refresh_samples(idx, payload.minute_index)
 
     def _on_sample_failed(self, key: tuple[str, int], msg: str) -> None:
         self.sample_inflight.discard(key)
@@ -999,6 +1002,9 @@ class MainWindow(QMainWindow):
         idx = self._current_index()
         if idx < 0:
             return
+        if self.processing_now:
+            QMessageBox.warning(self, "处理中", "当前正在执行批量任务，无法上传封面。")
+            return
         file_path, _ = QFileDialog.getOpenFileName(self, "选择封面图", filter="Image Files (*.jpg *.jpeg *.png *.webp)")
         if not file_path:
             return
@@ -1044,6 +1050,9 @@ class MainWindow(QMainWindow):
         idx = self._current_index()
         if idx < 0:
             return
+        if self.processing_now:
+            QMessageBox.warning(self, "处理中", "当前正在执行批量任务，无法切换分钟窗口。")
+            return
         probe = self.probes.get(idx)
         if probe is None:
             self._schedule_probe(idx, priority=10)
@@ -1063,6 +1072,9 @@ class MainWindow(QMainWindow):
         idx = self._current_index()
         if idx < 0:
             QMessageBox.information(self, "未选择视频", "请先在左侧列表中选择一个视频。")
+            return
+        if self.processing_now:
+            QMessageBox.warning(self, "处理中", "当前正在执行批量任务，无法删除视频。请等待任务完成后再试。")
             return
         job = self.jobs[idx]
         reply = QMessageBox.question(
