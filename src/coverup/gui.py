@@ -5,13 +5,14 @@ from pathlib import Path
 from typing import Callable
 
 from PySide6.QtCore import QObject, QRunnable, QSize, Qt, QThreadPool, Signal
-from PySide6.QtGui import QIcon, QImageReader, QPixmap
+from PySide6.QtGui import QColor, QIcon, QImageReader, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
     QCheckBox,
     QComboBox,
     QFileDialog,
+    QFrame,
     QGridLayout,
     QGroupBox,
     QHeaderView,
@@ -145,91 +146,317 @@ class MainWindow(QMainWindow):
     def _build_ui(self) -> None:
         root = QWidget()
         main_layout = QVBoxLayout(root)
-        self.setStyleSheet(
-            """
-            QMainWindow { background: #f4f7fb; }
+        self.setStyleSheet("""
+            /* ── Global ── */
+            QMainWindow { background: #F5F5F7; }
+            QLabel { color: #1D1D1F; font-size: 13px; }
+
+            /* ── Table ── */
             QTableWidget {
-                background: #ffffff;
-                border: 1px solid #d9e0ea;
-                gridline-color: #e7edf5;
-                alternate-background-color: #f8fbff;
+                background: #FFFFFF;
+                border: 1px solid #E5E5EA;
+                border-radius: 10px;
+                gridline-color: transparent;
+                alternate-background-color: #FAFAFA;
+                font-size: 13px;
+            }
+            QTableWidget::item {
+                padding: 6px 10px;
+                color: #1D1D1F;
             }
             QHeaderView::section {
-                background: #edf3fa;
-                color: #2a3342;
+                background: #FAFAFA;
+                color: #6E6E73;
                 border: none;
-                border-right: 1px solid #d9e0ea;
-                padding: 8px;
+                border-bottom: 1px solid #E5E5EA;
+                border-right: none;
+                padding: 10px 10px;
                 font-weight: 600;
+                font-size: 12px;
             }
+            QHeaderView::section:vertical {
+                background: #FAFAFA;
+                color: #8E8E93;
+                border: none;
+                border-bottom: 1px solid #F2F2F7;
+                padding: 4px;
+                font-size: 11px;
+            }
+
+            /* ── Buttons (secondary / default) ── */
             QPushButton {
-                background: #1f6feb;
+                background: #F2F2F7;
+                color: #1D1D1F;
+                border: 1px solid #E5E5EA;
+                border-radius: 8px;
+                padding: 8px 16px;
+                font-weight: 500;
+                font-size: 13px;
+            }
+            QPushButton:hover { background: #E5E5EA; }
+            QPushButton:pressed { background: #DCDCE0; }
+            QPushButton:disabled {
+                background: #F2F2F7;
+                color: #C7C7CC;
+            }
+
+            /* ── Primary action buttons ── */
+            QPushButton#btnRunSelected, QPushButton#btnRunAll {
+                background: #007AFF;
                 color: white;
                 border: none;
-                border-radius: 6px;
-                padding: 6px 12px;
+                padding: 8px 20px;
+                font-weight: 600;
             }
-            QPushButton:hover { background: #2c7bf4; }
-            QLineEdit {
-                border: 1px solid #c8d3e1;
-                border-radius: 5px;
-                padding: 5px 8px;
-                background: #ffffff;
-            }
-            """
-        )
+            QPushButton#btnRunSelected:hover, QPushButton#btnRunAll:hover { background: #0066D6; }
+            QPushButton#btnRunSelected:pressed, QPushButton#btnRunAll:pressed { background: #0055B3; }
 
-        top = QHBoxLayout()
+            /* ── Input fields ── */
+            QLineEdit {
+                border: 1px solid #E5E5EA;
+                border-radius: 8px;
+                padding: 7px 10px;
+                background: #FFFFFF;
+                color: #1D1D1F;
+                font-size: 13px;
+            }
+            QLineEdit:focus { border-color: #007AFF; }
+
+            /* ── Combo boxes ── */
+            QComboBox {
+                border: 1px solid #E5E5EA;
+                border-radius: 8px;
+                padding: 6px 10px;
+                background: #FFFFFF;
+                color: #1D1D1F;
+                font-size: 13px;
+                min-width: 100px;
+            }
+            QComboBox:hover { border-color: #C7C7CC; }
+            QComboBox::drop-down { border: none; width: 22px; }
+            QComboBox QAbstractItemView {
+                background: #FFFFFF;
+                border: 1px solid #E5E5EA;
+                border-radius: 6px;
+                selection-background-color: #007AFF;
+                selection-color: white;
+                padding: 4px;
+            }
+
+            /* ── Spin box ── */
+            QSpinBox {
+                border: 1px solid #E5E5EA;
+                border-radius: 8px;
+                padding: 6px 8px;
+                background: #FFFFFF;
+                color: #1D1D1F;
+                font-size: 13px;
+            }
+            QSpinBox:focus { border-color: #007AFF; }
+
+            /* ── Checkboxes ── */
+            QCheckBox {
+                color: #1D1D1F;
+                font-size: 13px;
+                spacing: 6px;
+            }
+            QCheckBox::indicator {
+                width: 18px;
+                height: 18px;
+                border: 2px solid #C7C7CC;
+                border-radius: 5px;
+                background: #FFFFFF;
+            }
+            QCheckBox::indicator:checked {
+                background: #007AFF;
+                border-color: #007AFF;
+            }
+
+            /* ── Group boxes (cards) ── */
+            QGroupBox {
+                background: #FFFFFF;
+                border: 1px solid #E5E5EA;
+                border-radius: 12px;
+                margin-top: 16px;
+                padding: 20px 16px 16px 16px;
+                font-weight: 600;
+                font-size: 14px;
+                color: #1D1D1F;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 16px;
+                padding: 0 8px;
+            }
+
+            /* ── List widget (sample grid) ── */
+            QListWidget {
+                background: #FFFFFF;
+                border: 1px solid #E5E5EA;
+                border-radius: 12px;
+                padding: 10px;
+                outline: none;
+            }
+            QListWidget::item {
+                border-radius: 8px;
+                padding: 6px;
+                margin: 4px;
+                background: #FAFAFA;
+                border: 2px solid transparent;
+            }
+            QListWidget::item:selected {
+                background: #E8F2FF;
+                border: 2px solid #007AFF;
+            }
+            QListWidget::item:hover:!selected {
+                background: #F2F2F7;
+                border: 2px solid #E5E5EA;
+            }
+
+            /* ── Scroll bars ── */
+            QScrollBar:vertical {
+                background: transparent;
+                width: 8px;
+                margin: 0;
+            }
+            QScrollBar::handle:vertical {
+                background: #C7C7CC;
+                border-radius: 4px;
+                min-height: 30px;
+            }
+            QScrollBar::handle:vertical:hover { background: #AEAEB2; }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
+            QScrollBar:horizontal {
+                background: transparent;
+                height: 8px;
+            }
+            QScrollBar::handle:horizontal {
+                background: #C7C7CC;
+                border-radius: 4px;
+                min-width: 30px;
+            }
+            QScrollBar::handle:horizontal:hover { background: #AEAEB2; }
+            QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal { width: 0; }
+
+            /* ── Toolbar card ── */
+            QFrame#toolbarCard {
+                background: #FFFFFF;
+                border: 1px solid #E5E5EA;
+                border-radius: 12px;
+            }
+
+            /* ── Section header labels ── */
+            QLabel#sectionHeader {
+                color: #6E6E73;
+                font-weight: 600;
+                font-size: 11px;
+            }
+
+            /* ── Tool tips ── */
+            QToolTip {
+                background: #1D1D1F;
+                color: #FFFFFF;
+                border: none;
+                border-radius: 6px;
+                padding: 8px 12px;
+                font-size: 12px;
+            }
+        """)
+
+        main_layout.setContentsMargins(24, 20, 24, 20)
+        main_layout.setSpacing(16)
+
+        # ── Toolbar card ──
+        toolbar = QFrame()
+        toolbar.setObjectName("toolbarCard")
+        toolbar_layout = QHBoxLayout(toolbar)
+        toolbar_layout.setContentsMargins(16, 12, 16, 12)
+        toolbar_layout.setSpacing(10)
+
+        # Group 1: File operations
         self.btn_add_files = QPushButton("添加视频")
         self.btn_add_dir = QPushButton("打开目录")
         self.chk_recursive = QCheckBox("递归子目录")
         self.chk_recursive.setChecked(True)
+        toolbar_layout.addWidget(self.btn_add_files)
+        toolbar_layout.addWidget(self.btn_add_dir)
+        toolbar_layout.addWidget(self.chk_recursive)
+
+        # Separator 1
+        sep1 = QWidget()
+        sep1.setFixedWidth(1)
+        sep1.setStyleSheet("background: #E5E5EA;")
+        toolbar_layout.addWidget(sep1)
+
+        # Group 2: Execution strategy
         self.chk_mode_metadata = QCheckBox("元数据封面")
         self.chk_mode_metadata.setChecked(True)
         self.chk_mode_first_frame = QCheckBox("替换首帧")
-        self.chk_cmd_logs = QCheckBox("命令行日志")
-        self.chk_cmd_logs.setChecked(True)
         self.cmb_metadata_failure_action = QComboBox()
         self.cmb_metadata_failure_action.addItem("失败后跳过", MetadataFailureAction.SKIP.value)
         self.cmb_metadata_failure_action.addItem("失败后首帧重编码", MetadataFailureAction.FIRST_FRAME.value)
         self.cmb_metadata_failure_action.addItem("直接首帧", MetadataFailureAction.DIRECT_FIRST_FRAME.value)
         self.cmb_metadata_failure_action.setCurrentIndex(0)
+        lbl_strategy = QLabel("执行策略")
+        lbl_strategy.setObjectName("sectionHeader")
+        toolbar_layout.addWidget(lbl_strategy)
+        toolbar_layout.addWidget(self.chk_mode_metadata)
+        toolbar_layout.addWidget(self.chk_mode_first_frame)
+        lbl_fallback = QLabel("元数据失败")
+        lbl_fallback.setObjectName("sectionHeader")
+        toolbar_layout.addWidget(lbl_fallback)
+        toolbar_layout.addWidget(self.cmb_metadata_failure_action)
+
+        # Separator 2
+        sep2 = QWidget()
+        sep2.setFixedWidth(1)
+        sep2.setStyleSheet("background: #E5E5EA;")
+        toolbar_layout.addWidget(sep2)
+
+        # Group 3: Logging & concurrency
         self.cmb_log_verbosity = QComboBox()
-        self.cmb_log_verbosity.addItem("紧凑", LogVerbosity.COMPACT.value)
-        self.cmb_log_verbosity.addItem("中等", LogVerbosity.MEDIUM.value)
-        self.cmb_log_verbosity.addItem("原始", LogVerbosity.RAW.value)
+        self.cmb_log_verbosity.addItem("紧凑日志", LogVerbosity.COMPACT.value)
+        self.cmb_log_verbosity.addItem("中等日志", LogVerbosity.MEDIUM.value)
+        self.cmb_log_verbosity.addItem("原始日志", LogVerbosity.RAW.value)
         self.cmb_log_verbosity.setCurrentIndex(1)
+        self.cmb_log_verbosity.setToolTip("命令行日志详细程度")
+        self.chk_cmd_logs = QCheckBox("显示命令行")
+        self.chk_cmd_logs.setChecked(True)
         self.spin_concurrency = QSpinBox()
         self.spin_concurrency.setRange(1, 4)
         self.spin_concurrency.setValue(2)
         self.spin_concurrency.setToolTip("同时处理的文件数")
-        self.spin_concurrency.setFixedWidth(60)
-        self.btn_run_all = QPushButton("执行全部")
-        self.btn_run_selected = QPushButton("执行选择")
-        top.addWidget(self.btn_add_files)
-        top.addWidget(self.btn_add_dir)
-        top.addWidget(self.chk_recursive)
-        top.addSpacing(18)
-        top.addWidget(QLabel("执行策略："))
-        top.addWidget(self.chk_mode_metadata)
-        top.addWidget(self.chk_mode_first_frame)
-        top.addWidget(self.chk_cmd_logs)
-        top.addWidget(QLabel("元数据失败："))
-        top.addWidget(self.cmb_metadata_failure_action)
-        top.addWidget(QLabel("日志："))
-        top.addWidget(self.cmb_log_verbosity)
-        top.addWidget(QLabel("并发："))
-        top.addWidget(self.spin_concurrency)
-        top.addStretch(1)
-        top.addWidget(self.btn_run_selected)
-        top.addWidget(self.btn_run_all)
-        main_layout.addLayout(top)
+        self.spin_concurrency.setFixedWidth(56)
+        lbl_log = QLabel("日志级别")
+        lbl_log.setObjectName("sectionHeader")
+        toolbar_layout.addWidget(lbl_log)
+        toolbar_layout.addWidget(self.cmb_log_verbosity)
+        toolbar_layout.addWidget(self.chk_cmd_logs)
+        lbl_conc = QLabel("并发数")
+        lbl_conc.setObjectName("sectionHeader")
+        toolbar_layout.addWidget(lbl_conc)
+        toolbar_layout.addWidget(self.spin_concurrency)
 
+        toolbar_layout.addStretch(1)
+
+        # Group 4: Primary action buttons
+        self.btn_run_selected = QPushButton("执行选择")
+        self.btn_run_selected.setObjectName("btnRunSelected")
+        self.btn_run_all = QPushButton("执行全部")
+        self.btn_run_all.setObjectName("btnRunAll")
+        toolbar_layout.addWidget(self.btn_run_selected)
+        toolbar_layout.addWidget(self.btn_run_all)
+
+        main_layout.addWidget(toolbar)
+
+        # ── Main splitter ──
         splitter = QSplitter(Qt.Horizontal)
         main_layout.addWidget(splitter, 1)
 
+        # ── Left panel: video table ──
         left = QWidget()
         left_layout = QVBoxLayout(left)
+        left_layout.setContentsMargins(0, 0, 0, 0)
         self.table = QTableWidget(0, 11)
         self.table.setHorizontalHeaderLabels(
             ["选择", "当前封面", "修改后封面", "文件名", "目录", "封面来源", "已有元数据", "状态", "策略结果", "错误信息", "分钟窗口"]
@@ -237,9 +464,10 @@ class MainWindow(QMainWindow):
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SingleSelection)
         self.table.verticalHeader().setVisible(True)
-        self.table.verticalHeader().setDefaultSectionSize(96)
+        self.table.verticalHeader().setDefaultSectionSize(100)
         self.table.setAlternatingRowColors(True)
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.table.setShowGrid(False)
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(self.COL_SELECTED, QHeaderView.Fixed)
         self.table.setColumnWidth(self.COL_SELECTED, 62)
@@ -248,26 +476,37 @@ class MainWindow(QMainWindow):
         left_layout.addWidget(self.table)
         splitter.addWidget(left)
 
+        # ── Right panel ──
         right = QWidget()
         right_layout = QVBoxLayout(right)
+        right_layout.setContentsMargins(0, 0, 0, 0)
+        right_layout.setSpacing(12)
 
+        # Video info card
         info_box = QGroupBox("当前视频")
         info_layout = QVBoxLayout(info_box)
-        self.lbl_video = QLabel("未选择")
-        self.lbl_probe = QLabel("探测信息：-")
-        self.lbl_window = QLabel("抽帧窗口：-")
+        info_layout.setSpacing(8)
+        self.lbl_video = QLabel("未选择视频")
+        self.lbl_video.setStyleSheet("font-weight: 600; font-size: 14px;")
+        self.lbl_probe = QLabel("探测信息：—")
+        self.lbl_probe.setStyleSheet("color: #6E6E73; font-size: 12px;")
+        self.lbl_window = QLabel("抽帧窗口：—")
+        self.lbl_window.setStyleSheet("color: #6E6E73; font-size: 12px;")
         info_layout.addWidget(self.lbl_video)
         info_layout.addWidget(self.lbl_probe)
         info_layout.addWidget(self.lbl_window)
         right_layout.addWidget(info_box)
 
+        # Action buttons row
         action_row = QHBoxLayout()
+        action_row.setSpacing(8)
         self.btn_upload_cover = QPushButton("上传封面图")
-        self.btn_next_minute = QPushButton("更换（下一分钟）")
+        self.btn_next_minute = QPushButton("下一分钟")
         action_row.addWidget(self.btn_upload_cover)
         action_row.addWidget(self.btn_next_minute)
         right_layout.addLayout(action_row)
 
+        # Sample thumbnail grid
         self.grid = QListWidget()
         self.grid.setViewMode(QListWidget.IconMode)
         self.grid.setIconSize(QSize(220, 130))
@@ -277,11 +516,20 @@ class MainWindow(QMainWindow):
         self.grid.setSelectionMode(QAbstractItemView.SingleSelection)
         right_layout.addWidget(self.grid, 1)
 
-        help_box = QGroupBox("说明")
-        help_layout = QGridLayout(help_box)
-        help_layout.addWidget(QLabel("默认每分钟均匀抽 12 张，先从 0~60 秒。"), 0, 0)
-        help_layout.addWidget(QLabel("末尾不足 1 分钟时在剩余时长内抽 12 张。"), 1, 0)
-        help_layout.addWidget(QLabel("继续更换会回到第一分钟并循环。"), 2, 0)
+        # Help card
+        help_box = QGroupBox("使用说明")
+        help_layout = QVBoxLayout(help_box)
+        help_layout.setSpacing(6)
+        help_items = [
+            "默认每分钟均匀抽取 12 张候选帧，首分钟从 0~60 秒区间开始",
+            "末尾不足 1 分钟时在剩余时长内仍然抽取 12 张",
+            "点击「下一分钟」循环切换抽取区间，选择后自动设为封面",
+        ]
+        for item_text in help_items:
+            lbl = QLabel(f"• {item_text}")
+            lbl.setStyleSheet("color: #6E6E73; font-size: 12px;")
+            lbl.setWordWrap(True)
+            help_layout.addWidget(lbl)
         right_layout.addWidget(help_box)
 
         splitter.addWidget(right)
@@ -289,6 +537,7 @@ class MainWindow(QMainWindow):
 
         self.setCentralWidget(root)
 
+        # ── Signal connections ──
         self.btn_add_files.clicked.connect(self._on_add_files)
         self.btn_add_dir.clicked.connect(self._on_add_dir)
         self.table.itemSelectionChanged.connect(self._on_selection_change)
@@ -419,6 +668,16 @@ class MainWindow(QMainWindow):
             editor.setToolTip(str(job.video_path))
 
         directory_short = job.video_path.parent.name or str(job.video_path.parent)
+
+        # Status color mapping (system semantic colors)
+        _status_color = {
+            JobStatus.SUCCESS.value: "#34C759",
+            JobStatus.FAILED.value: "#FF3B30",
+            JobStatus.SKIPPED.value: "#FF9500",
+            JobStatus.RUNNING.value: "#007AFF",
+            JobStatus.IDLE.value: "#8E8E93",
+        }
+
         values = {
             self.COL_DIRECTORY: directory_short,
             self.COL_SOURCE: "上传" if job.cover_source == CoverSource.UPLOAD else "自动候选",
@@ -438,6 +697,21 @@ class MainWindow(QMainWindow):
                 item.setToolTip(str(job.video_path.parent))
             else:
                 item.setToolTip("")
+
+        # Apply color coding to status column
+        status_item = self.table.item(row, self.COL_STATUS)
+        if status_item:
+            color = _status_color.get(job.status.value, "#8E8E93")
+            status_item.setForeground(QColor(color))
+            if job.status == JobStatus.RUNNING:
+                font = status_item.font()
+                font.setBold(True)
+                status_item.setFont(font)
+
+        # Color code "has cover" column
+        cover_item = self.table.item(row, self.COL_HAS_COVER)
+        if cover_item and job.detected_has_cover is not None:
+            cover_item.setForeground(QColor("#34C759" if job.detected_has_cover else "#8E8E93"))
 
     def _start_worker(self, worker: CallableWorker, priority: int = 0) -> None:
         self.active_workers.add(worker)
@@ -461,8 +735,10 @@ class MainWindow(QMainWindow):
     def _build_cover_label(self, empty_text: str) -> QLabel:
         label = QLabel(empty_text)
         label.setAlignment(Qt.AlignCenter)
-        label.setMinimumSize(QSize(150, 84))
-        label.setStyleSheet("border: 1px solid #d9e0ea; border-radius: 6px; color: #4c5d73; background: #f8fbff;")
+        label.setMinimumSize(QSize(160, 90))
+        label.setStyleSheet(
+            "border: 1px solid #E5E5EA; border-radius: 8px; color: #8E8E93; background: #FAFAFA; font-size: 12px;"
+        )
         return label
 
     def _update_cover_cell(self, row: int, col: int, cover_path: Path | None, empty_text: str) -> None:
