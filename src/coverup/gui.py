@@ -251,6 +251,20 @@ class MainWindow(QMainWindow):
                 font-size: 13px;
             }
             QSpinBox:focus { border-color: #007AFF; }
+            QSpinBox::up-button {
+                border: none;
+                border-left: 1px solid #E5E5EA;
+                width: 22px;
+            }
+            QSpinBox::down-button {
+                border: none;
+                border-left: 1px solid #E5E5EA;
+                width: 22px;
+            }
+            QSpinBox::up-arrow, QSpinBox::down-arrow {
+                width: 8px;
+                height: 8px;
+            }
 
             /* ── Checkboxes ── */
             QCheckBox {
@@ -424,7 +438,7 @@ class MainWindow(QMainWindow):
         self.spin_concurrency.setRange(1, 4)
         self.spin_concurrency.setValue(2)
         self.spin_concurrency.setToolTip("同时处理的文件数")
-        self.spin_concurrency.setFixedWidth(56)
+        self.spin_concurrency.setFixedWidth(72)
         lbl_log = QLabel("日志级别")
         lbl_log.setObjectName("sectionHeader")
         toolbar_layout.addWidget(lbl_log)
